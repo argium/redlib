@@ -9,6 +9,7 @@ use askama::Template;
 use hyper::{Body, Request, Response};
 use regex::Regex;
 use std::sync::LazyLock;
+use url::form_urlencoded;
 
 // STRUCTS
 struct SearchParams {
@@ -19,6 +20,44 @@ struct SearchParams {
 	after: String,
 	restrict_sr: String,
 	typed: String,
+}
+
+impl SearchParams {
+	fn posts_query(&self) -> String {
+		encode_params(&[("q", &self.q), ("sort", &self.sort), ("t", &self.t)])
+	}
+
+	fn sr_user_query(&self) -> String {
+		encode_params(&[("q", &self.q), ("sort", &self.sort), ("t", &self.t), ("type", "sr_user")])
+	}
+
+	fn previous_page_query(&self) -> String {
+		self.page_query("before", &self.before)
+	}
+
+	fn next_page_query(&self) -> String {
+		self.page_query("after", &self.after)
+	}
+
+	fn page_query(&self, cursor_name: &str, cursor: &str) -> String {
+		let mut params = form_urlencoded::Serializer::new(String::new());
+		params.append_pair("q", &self.q);
+		if !self.restrict_sr.is_empty() {
+			params.append_pair("restrict_sr", &self.restrict_sr);
+		}
+		params.append_pair("sort", &self.sort);
+		params.append_pair("t", &self.t);
+		params.append_pair(cursor_name, cursor);
+		params.finish()
+	}
+}
+
+fn encode_params(pairs: &[(&str, &str)]) -> String {
+	let mut params = form_urlencoded::Serializer::new(String::new());
+	for &(key, value) in pairs {
+		params.append_pair(key, value);
+	}
+	params.finish()
 }
 
 // STRUCTS
@@ -111,7 +150,7 @@ pub async fn find(req: Request<Body>) -> Result<Response<Body>, String> {
 			subreddits,
 			sub,
 			params: SearchParams {
-				q: query.replace('"', "&quot;"),
+				q: query.clone(),
 				sort,
 				t: param(&path, "t").unwrap_or_default(),
 				before: param(&path, "after").unwrap_or_default(),
@@ -137,7 +176,7 @@ pub async fn find(req: Request<Body>) -> Result<Response<Body>, String> {
 					subreddits,
 					sub,
 					params: SearchParams {
-						q: query.replace('"', "&quot;"),
+						q: query.clone(),
 						sort,
 						t: param(&path, "t").unwrap_or_default(),
 						before: param(&path, "after").unwrap_or_default(),
@@ -167,7 +206,7 @@ pub async fn find(req: Request<Body>) -> Result<Response<Body>, String> {
 
 async fn search_subreddits(q: &str, typed: &str) -> Vec<Subreddit> {
 	let limit = if typed == "sr_user" { "50" } else { "3" };
-	let subreddit_search_path = format!("/subreddits/search.json?q={}&limit={limit}", q.replace(' ', "+"));
+	let subreddit_search_path = format!("/subreddits/search.json?{}", encode_params(&[("q", q), ("limit", limit)]));
 
 	// Send a request to the url
 	json(subreddit_search_path, false).await.unwrap_or_default()["data"]["children"]
@@ -189,4 +228,37 @@ async fn search_subreddits(q: &str, typed: &str) -> Vec<Subreddit> {
 			}
 		})
 		.collect::<Vec<Subreddit>>()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::SearchParams;
+
+	fn params() -> SearchParams {
+		SearchParams {
+			q: "flair_name:\"A/B & C+\"".to_string(),
+			sort: "top".to_string(),
+			t: "week".to_string(),
+			before: "t3_prev/1".to_string(),
+			after: "t3_next/2".to_string(),
+			restrict_sr: "on".to_string(),
+			typed: String::new(),
+		}
+	}
+
+	#[test]
+	fn search_params_url_encode_links() {
+		let params = params();
+
+		assert_eq!(params.posts_query(), "q=flair_name%3A%22A%2FB+%26+C%2B%22&sort=top&t=week");
+		assert_eq!(params.sr_user_query(), "q=flair_name%3A%22A%2FB+%26+C%2B%22&sort=top&t=week&type=sr_user");
+		assert_eq!(
+			params.previous_page_query(),
+			"q=flair_name%3A%22A%2FB+%26+C%2B%22&restrict_sr=on&sort=top&t=week&before=t3_prev%2F1"
+		);
+		assert_eq!(
+			params.next_page_query(),
+			"q=flair_name%3A%22A%2FB+%26+C%2B%22&restrict_sr=on&sort=top&t=week&after=t3_next%2F2"
+		);
+	}
 }

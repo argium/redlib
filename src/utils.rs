@@ -21,7 +21,7 @@ use std::str::FromStr;
 use std::string::ToString;
 use std::sync::LazyLock;
 use time::{macros::format_description, Duration, OffsetDateTime};
-use url::Url;
+use url::{form_urlencoded, Url};
 
 /// Write a message to stderr on debug mode. This function is a no-op on
 /// release code.
@@ -55,6 +55,15 @@ pub struct Flair {
 	pub text: String,
 	pub background_color: String,
 	pub foreground_color: String,
+}
+
+impl Flair {
+	pub fn search_query(&self) -> String {
+		let mut params = form_urlencoded::Serializer::new(String::new());
+		params.append_pair("q", &format!("flair_name:\"{}\"", self.text));
+		params.append_pair("restrict_sr", "on");
+		params.finish()
+	}
 }
 
 /// Part of flair, either emoji or text
@@ -1451,7 +1460,7 @@ pub fn to_absolute_url(relative_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-	use super::{deflate_compress, deflate_decompress, format_num, format_url, render_bullet_lists, rewrite_emotes, rewrite_urls, url_path_basename, Post, Preferences};
+	use super::{deflate_compress, deflate_decompress, format_num, format_url, render_bullet_lists, rewrite_emotes, rewrite_urls, url_path_basename, Flair, Post, Preferences};
 
 	#[test]
 	fn format_num_works() {
@@ -1517,6 +1526,18 @@ mod tests {
 		assert_eq!(format_url("default"), "");
 		assert_eq!(format_url("nsfw"), "");
 		assert_eq!(format_url("spoiler"), "");
+	}
+
+	#[test]
+	fn flair_search_query_url_encodes_value() {
+		let flair = Flair {
+			flair_parts: Vec::new(),
+			text: "A/B & C+".to_string(),
+			background_color: String::new(),
+			foreground_color: String::new(),
+		};
+
+		assert_eq!(flair.search_query(), "q=flair_name%3A%22A%2FB+%26+C%2B%22&restrict_sr=on");
 	}
 	#[test]
 	fn serialize_prefs() {

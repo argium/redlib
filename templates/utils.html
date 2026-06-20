@@ -90,7 +90,7 @@
 	</p>
 	<h1 class="post_title">
 		{% if post.flair.flair_parts.len() > 0 %}
-			<a href="/r/{{ post.community }}/search?q=flair_name%3A%22{{ post.flair.text }}%22&restrict_sr=on"
+			<a href="/r/{{ post.community }}/search?{{ post.flair.search_query() }}"
 				class="post_flair"
 				style="color:{{ post.flair.foreground_color }}; background:{{ post.flair.background_color }};">{% call render_flair(post.flair.flair_parts) %}</a>
 		{% endif %}
@@ -242,7 +242,7 @@
 	</p>
 	<h2 class="post_title">
 		{% if post.flair.flair_parts.len() > 0 %}
-			<a href="/r/{{ post.community }}/search?q=flair_name%3A%22{{ post.flair.text }}%22&restrict_sr=on"
+			<a href="/r/{{ post.community }}/search?{{ post.flair.search_query() }}"
 				class="post_flair"
 				style="color:{{ post.flair.foreground_color }}; background:{{ post.flair.background_color }};"
 				dir="ltr">{% call render_flair(post.flair.flair_parts) %}</a>
