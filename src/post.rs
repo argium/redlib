@@ -4,7 +4,8 @@ use crate::config::get_setting;
 use crate::server::RequestExt;
 use crate::subreddit::{can_access_quarantine, quarantine};
 use crate::utils::{
-	error, format_num, get_filters, nsfw_landing, param, parse_post, rewrite_emotes, setting, template, time, val, Author, Awards, Comment, Flair, FlairPart, Post, Preferences,
+	absolute_url, error, format_num, get_filters, nsfw_landing, param, parse_post, rewrite_emotes, setting, template, time, val, Author, Awards, Comment, Flair, FlairPart,
+	Post, Preferences,
 };
 use askama::Template;
 use hyper::{Body, Request, Response};
@@ -22,6 +23,9 @@ struct PostTemplate {
 	prefs: Preferences,
 	single_thread: bool,
 	url: String,
+	page_url: String,
+	preview_image: String,
+	preview_video: String,
 	url_without_query: String,
 	comment_query: String,
 }
@@ -62,6 +66,13 @@ pub async fn item(req: Request<Body>) -> Result<Response<Body>, String> {
 		Ok(response) => {
 			// Parse the JSON into Post and Comment structs
 			let post = parse_post(&response[0]["data"]["children"][0]).await;
+			let page_url = absolute_url(&req, &post.permalink);
+			let preview_image = preview_image(&req, &post);
+			let preview_video = if post.post_type == "video" || post.post_type == "gif" {
+				absolute_url(&req, &post.media.url)
+			} else {
+				String::new()
+			};
 
 			let req_url = req.uri().to_string();
 			// Return landing page if this post if this Reddit deems this post
@@ -94,6 +105,9 @@ pub async fn item(req: Request<Body>) -> Result<Response<Body>, String> {
 				prefs: Preferences::new(&req),
 				single_thread,
 				url: req_url,
+				page_url,
+				preview_image,
+				preview_video,
 				comment_query: query,
 			}))
 		}
@@ -107,6 +121,23 @@ pub async fn item(req: Request<Body>) -> Result<Response<Body>, String> {
 			}
 		}
 	}
+}
+
+fn preview_image(req: &Request<Body>, post: &Post) -> String {
+	let image = match post.post_type.as_str() {
+		"image" => post.media.url.as_str(),
+		"gallery" => post.gallery.first().map(|media| media.url.as_str()).unwrap_or(post.thumbnail.url.as_str()),
+		"gif" | "video" => {
+			if post.media.poster.is_empty() {
+				post.thumbnail.url.as_str()
+			} else {
+				post.media.poster.as_str()
+			}
+		}
+		_ => post.thumbnail.url.as_str(),
+	};
+
+	absolute_url(req, image)
 }
 
 // COMMENTS

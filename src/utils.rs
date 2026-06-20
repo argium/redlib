@@ -1458,9 +1458,52 @@ pub fn to_absolute_url(relative_path: &str) -> String {
 	format!("{}{}", config::get_setting("REDLIB_FULL_URL").unwrap_or_default(), relative_path)
 }
 
+pub fn absolute_url(req: &Request<Body>, url: &str) -> String {
+	if url.is_empty() || url.starts_with("http://") || url.starts_with("https://") {
+		return url.to_string();
+	}
+
+	if let Some(full_url) = config::get_setting("REDLIB_FULL_URL").filter(|url| !url.is_empty()) {
+		return join_url(&full_url, url);
+	}
+
+	let Some(host) = header_value(req, "x-forwarded-host").or_else(|| header_value(req, "host")) else {
+		return url.to_string();
+	};
+
+	let scheme = header_value(req, "x-forwarded-proto")
+		.filter(|scheme| *scheme == "http" || *scheme == "https")
+		.unwrap_or_else(|| {
+			if host.starts_with("localhost") || host.starts_with("127.") || host.starts_with("[::1]") {
+				"http"
+			} else {
+				"https"
+			}
+		});
+
+	join_url(&format!("{scheme}://{host}"), url)
+}
+
+fn header_value<'a>(req: &'a Request<Body>, name: &str) -> Option<&'a str> {
+	req
+		.headers()
+		.get(name)
+		.and_then(|value| value.to_str().ok())
+		.and_then(|value| value.split(',').next())
+		.map(str::trim)
+		.filter(|value| !value.is_empty())
+}
+
+fn join_url(base: &str, path: &str) -> String {
+	format!("{}/{}", base.trim_end_matches('/'), path.trim_start_matches('/'))
+}
+
 #[cfg(test)]
 mod tests {
-	use super::{deflate_compress, deflate_decompress, format_num, format_url, render_bullet_lists, rewrite_emotes, rewrite_urls, url_path_basename, Flair, Post, Preferences};
+	use super::{
+		absolute_url, deflate_compress, deflate_decompress, format_num, format_url, render_bullet_lists, rewrite_emotes, rewrite_urls, url_path_basename, Flair, Post, Preferences,
+	};
+	use hyper::Request;
 
 	#[test]
 	fn format_num_works() {
@@ -1539,6 +1582,15 @@ mod tests {
 
 		assert_eq!(flair.search_query(), "q=flair_name%3A%22A%2FB+%26+C%2B%22&restrict_sr=on");
 	}
+
+	#[test]
+	fn absolute_url_uses_request_host() {
+		let req = Request::builder().header("host", "redlib.example").body(Default::default()).unwrap();
+
+		assert_eq!(absolute_url(&req, "/r/rust/comments/abc"), "https://redlib.example/r/rust/comments/abc");
+		assert_eq!(absolute_url(&req, "https://example.com/post"), "https://example.com/post");
+	}
+
 	#[test]
 	fn serialize_prefs() {
 		let prefs = Preferences {
