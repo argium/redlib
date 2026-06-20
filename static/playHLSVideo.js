@@ -10,8 +10,8 @@
             var oldVideo = source.parentNode;
             var autoplay = oldVideo.classList.contains("hls_autoplay");
 
-            // If HLS is supported natively then don't use hls.js
-            if (oldVideo.canPlayType(source.type) === "probably") {
+            // canPlayType returns one of "probably", "maybe", or ""; if HLS is supported natively then don't use hls.js
+            if (oldVideo.canPlayType(source.type)) {
                 if (autoplay) {
                     oldVideo.play();
                 }
