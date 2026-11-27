@@ -201,7 +201,7 @@ Every JS route is served without `Cache-Control`, including the 412 KB `hls.min.
 #### Solution
 
 - `main.rs` builds the application in `build_app(hsts)`, so tests can serve the real route table on a loopback port.
-- JS routes use the existing cache header (`public, max-age=1209600, s-maxage=86400`), and templates reference them as `/name.js?v={{ env!("CARGO_PKG_VERSION") }}` like `style.css`.
+- Scripts live in `src/assets.rs`: compressed once, versioned by a hash of their content, linked as `/name.js?v=<hash>`. Only a request with the matching `v` gets `public, max-age=31536000, immutable`; others get `max-age=300` (added in the review fix).
 - `utils::any_hls_video(posts)` is true when a post has an HLS `alt_url`; the three listing templates add the HLS scripts only when `use_hls` is on and it is true, with `defer`.
 
 #### Notes
@@ -423,7 +423,7 @@ Concurrent identical requests each spend one of Reddit's rate-limit slots; subsc
 
 #### Solution
 
-- `client::json` uses `sync_writes = "by_key"`, so concurrent calls for one `(path, quarantine)` key share one upstream request.
+- `client::json` runs its fetch through `SingleFlight` (`src/single_flight.rs`), so concurrent calls for one `(path, quarantine)` key share one upstream request and its error, with a 20 s total deadline. The first version used `#[cached(sync_writes = "by_key")]`, which keeps a per-key map forever; the review replaced it.
 - `display_names(sub, fetch)` resolves each name through `about.json` and no longer requests `hot.json`.
 - `ResponseExt::cookies()` parses `Set-Cookie` headers.
 
@@ -433,7 +433,7 @@ Concurrent identical requests each spend one of Reddit's rate-limit slots; subsc
 
 - **Verify:** `cargo test --locked --lib vary_singleflight_and_cookies` passes.
 
-- Boundary: `json` itself needs live Reddit, so the coalescing test uses a local function with the same `#[cached(...)]` attributes (it proves the attribute combination, not the call site). The lookup takes the fetcher as a closure.
+- Boundary: `json` itself needs live Reddit, so the coalescing tests drive `SingleFlight`, the primitive `json` uses, and the deadline helper `within`. The lookup takes the fetcher as a closure.
 
 <details>
 <summary>⚙️ <b>Technical details</b></summary>
@@ -506,7 +506,7 @@ Slice 3 is accepted only when every milestone (M3.1–M3.6) has a passing regres
 
 Slice 3 implemented on 2026-11-28 against baseline `04003d1` (Slice 2).
 
-- **Checks:** `cargo fmt --check` clean; `cargo clippy --locked --all-targets -- -D warnings` clean; `cargo test --locked` passes 117 library tests, 23 binary tests, 3 `healthcheck` and 2 `startup_config` integration tests offline, with the 20 live-Reddit tests ignored.
+- **Checks:** `cargo fmt --check` clean; `cargo clippy --locked --all-targets -- -D warnings` clean; `cargo test --locked` passes 126 library tests, 24 binary tests, 3 `healthcheck` and 2 `startup_config` integration tests offline (counts after the review fixes), with the 20 live-Reddit tests ignored.
 - **Milestone filters:** `compress_response` 4; `comment_prefs_reuse` 2; `static_js_caching` 3 (lib) + 1 (bin); `panic_and_render_errors` 3; `request_logs` 1; `healthz_and_shutdown` 2 + 1 probe (lib), 1 route test (bin), 3 (`--test healthcheck`), 1 stalled-shutdown (lib); `vary_singleflight_and_cookies` 3.
 - **Decisions:** Brotli quality 4, `lgwin` 20. The whole-body cache is removed rather than hash-keyed. Request logs are `debug` (routine success), handler errors `warn`, panics and render failures `error`, so the default `RUST_LOG` stays quiet. `/healthz` is `200` while the token is unexpired, `503` otherwise. The rate-limit counter is informational because it refills by itself. `--healthcheck` prints `ok` on stdout / exits 0, or prints `unhealthy: <reason>` on stderr / exits 1 (clap keeps 2 for bad usage).
 
@@ -527,7 +527,7 @@ Slice 3 implemented on 2026-11-28 against baseline `04003d1` (Slice 2).
 | M3.5 | `healthz_and_shutdown_route_answers_200_then_503` | without the route, `/healthz` falls through to `/:id`, which reaches `canonical_path` and Reddit: the test hung past 60 s and was killed |
 | M3.5 | `healthz_and_shutdown_probe_addresses_*`, `healthz_and_shutdown_healthcheck_*` (3) | `left: ["0.0.0.0:8080"] right: ["127.0.0.1:8080"]`; binary exit `Some(2)` with `unexpected argument found` |
 | M3.5 | `healthz_and_shutdown_stalled_connection_does_not_block_shutdown` | `shutdown waited for a stalled connection` (seen by temporarily disabling the deadline branch) |
-| M3.6 | `vary_singleflight_and_cookies_concurrent_identical_calls_fetch_once` | `left: 10 right: 1` (attribute absent) |
+| M3.6 | `vary_singleflight_and_cookies_concurrent_waiters_share_one_fetch` and siblings in `src/single_flight.rs` (review fix; replaces the stand-in `#[cached]` test) | hung: with a pass-through stub no waiter ever queues |
 | M3.6 | `vary_singleflight_and_cookies_display_names_use_about_json` | `["/r/rust/hot.json?raw_json=1", "/r/rust/about.json?raw_json=1"]` (stub kept the hot lookup) |
 | M3.6 | `vary_singleflight_and_cookies_response_cookies_reads_set_cookie` | `left: [] right: [("theme", "dark"), ("old", "")]` |
 
@@ -540,9 +540,32 @@ Slice 3 implemented on 2026-11-28 against baseline `04003d1` (Slice 2).
 
 ### Not verified
 
-- `client::json` itself needs live Reddit. The single-flight test proves the `#[cached(..., sync_writes = "by_key")]` attribute combination on a stand-in function, not the call site. A reviewer should confirm the attribute is on `json`.
+- `client::json` itself needs live Reddit. `SingleFlight` and the deadline helper are tested; the wiring inside `json` (`JSON_FLIGHTS.run(.., within(JSON_DEADLINE, fetch_json(..)))`) is review-only.
 - Recording the token expiry when a client is installed (`Oauth::record_token_expiry` in `OAUTH_CLIENT` init and `force_refresh_token`) needs live Reddit; `/healthz` is tested with the static set directly.
 - The real SIGINT/SIGTERM handler is moved to `shutdown_signal()` unchanged; only the deadline logic is tested through a oneshot.
 - `subscriptions_filters` calling `display_name` needs live Reddit; the helper is tested. Multi-subreddit subscriptions (`a+b`) now cost one cached `about.json` per name instead of one hot listing.
 - `instance_info` renders still `unwrap()`; a panic there is now caught and answered with 500 rather than fixed.
 - No browser check that `defer` on `hls.min.js`/`playHLSVideo.js` keeps playback working: `playHLSVideo.js` runs at the end of the body and deferred scripts run in order, which should be equivalent.
+
+### Review
+
+A reviewer read `b598db5`. Verified findings and their dispositions:
+
+| Finding | Disposition | Regression test |
+| --- | --- | --- |
+| Critical: `sync_writes = "by_key"` on `client::json` builds a per-key map that is never pruned, so distinct paths grow memory without limit | Fixed: removed; `SingleFlight` keeps an entry only while its fetch runs, and the bounded `#[cached]` stays for results | `vary_singleflight_and_cookies_concurrent_waiters_share_one_fetch`, `..._an_error_is_shared_not_refetched`, `..._waiters_recover_when_the_leader_is_cancelled`, `..._different_keys_do_not_wait_for_each_other` (each asserts the map is empty afterwards). Red: with a pass-through stub the tests hang |
+| `json` had no total deadline, so a slow trickle held the key and its waiters open | Fixed: the fetch runs inside a 20 s `within` limit; waiters share the leader's error | `json_deadline_gives_up_on_a_slow_upstream` (red with the limit removed: hangs) |
+| Debug log of a handler error included the visitor's path and query (the tail after the pipe character) | Fixed: only the part before the pipe is logged | `request_logs_handler_errors_leave_out_the_visitors_path` (red: `log line leaks the request path`) |
+| Without the compress cache, the 412 KB `hls.min.js` was Brotli-compressed on every request | Fixed: `StaticBody` compresses once per script; `compress_response` skips bodies that already have a `Content-Encoding` | `static_js_caching_precompressed_body_is_reused_across_requests` (same buffer on both requests), `..._follows_accept_encoding`, `..._compress_response_leaves_encoded_bodies_alone` (red: `"gzip"` vs `"br"`), `static_js_caching_scripts_are_served_compressed_from_the_precompressed_copy` (red when the skip is disabled: the body no longer decodes to the file) |
+| `?v=` used the crate version and unversioned URLs also got 14 days of caching | Fixed: `v` is a content hash; only the matching `v` is `immutable` for a year, everything else gets 300 s | `static_js_caching_only_versioned_urls_are_cached_for_good` (red: every URL was `immutable`), `static_js_caching_version_follows_the_content`, and the listing render tests that match `?v=` to `assets::version` |
+| The HLS scripts' order was untested | Fixed: the three listing render tests assert `hls.min.js` precedes `playHLSVideo.js`, both deferred | `static_js_caching_{subreddit,search,user}_loads_hls_only_for_hls_posts` (red against the crate-version templates) |
+
+Accepted, not fixed:
+
+- `/healthz` ignores `ratelimit_remaining`: it is informational and refills on its own.
+- `Vary: Accept-Encoding` is added only to responses that are eligible for compression.
+- A panic inside a streaming response body is not caught by the route-level `catch_unwind`.
+- On Windows only Ctrl+C triggers shutdown; SIGTERM does not exist there.
+- The Brotli quality (4) is not pinned by a test.
+- `/style.css` still takes the crate version and the 14-day cache and is compressed per request; it was outside this finding's scope.
+- Static scripts are compressed during `assets::warm()` at startup, which blocks one worker briefly before the server listens.
