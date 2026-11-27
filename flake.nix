@@ -24,7 +24,8 @@
 
         inherit (pkgs) lib;
 
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+        # Matches `rust-version` in Cargo.toml, so the flake builds with the oldest supported toolchain.
+        rustToolchain = pkgs.rust-bin.stable."1.89.0".default.override {
           targets = [ "x86_64-unknown-linux-musl" ];
         };
 
@@ -42,7 +43,7 @@
         redlib = craneLib.buildPackage {
           inherit src;
           strictDeps = true;
-          doCheck = false;
+          doCheck = true;
 
           CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
           CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";

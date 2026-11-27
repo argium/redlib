@@ -263,3 +263,7 @@ Scratch logs, exports and replays are in `D:/src/redlib-scratch/s7`.
 - arm64 and armv7 images (QEMU), Docker itself (Podman only), Heroku, Nix, the devcontainer.
 - `docker/metadata-action` still labels images with `org.opencontainers.image.revision` from `github.sha` (the default branch tip) in a `workflow_run`; tags use the built commit.
 - `docker/*` actions keep their old major versions (unrelated to this change); the actions this slice adds or edits are at the latest stable release with full SHAs: checkout v7.0.1 (newer than the plan's v4), upload-artifact v7.0.2, download-artifact v8.0.2, rust-cache v2.9.3, install-action v2.90.11, action-gh-release v3.0.4, `dtolnay/rust-toolchain` at the `stable` branch tip (the action publishes no releases).
+
+### MSRV decision (orchestrator, 2026-11-28)
+
+`rust-version = "1.81"` was already untrue before this slice: 1.81 cannot parse an `edition2024` manifest in the locked tree, 1.88 fails on `uuid 1.28.0`, and `cargo +1.89 check --locked --all-targets` passes. `Cargo.toml` now states `rust-version = "1.89"`, and `flake.nix` pins the same toolchain with `doCheck = true`. Nix is not installed here, so the flake build and its test run are unverified; the offline suite only binds loopback sockets, which the Nix sandbox allows.

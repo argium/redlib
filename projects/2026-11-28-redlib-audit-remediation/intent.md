@@ -53,3 +53,4 @@ Session prompts (2026-11-28):
 - **2026-11-28 (session, agreed):** Approved the plan and its proposed defaults: all 55 items are in scope (medium-value items included); delivery is the proposed 7-layer stacked PR; #3 escapes `pulldown_cmark` raw HTML events without a new crate; #8 fails startup with a non-zero exit when an existing `redlib.toml` cannot be read or parsed; #28 wires `REDLIB_DEFAULT_AUTOPLAY_VIDEOS` into `Config`.
 - **2026-11-28 (session, agreed):** Every milestone requires verification evidence and a regression unit test that fails before the fix and passes after it.
 - **2026-11-28 (session, agreed):** Commit without signing when signing is unavailable ("skip commit sign when applicable").
+- **2026-11-28 (orchestrator, reversible):** MSRV recorded as Rust 1.89, the oldest toolchain that builds the locked dependencies; `flake.nix` pins it.
