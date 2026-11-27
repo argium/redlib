@@ -203,6 +203,7 @@
 				value="{% match prefs.to_export_string() %}{% when Ok with (bincode_str) %}{{ bincode_str }}{% when Err with (err) %}Error: {{ err }}{% endmatch %}"
 				readonly>
 			<button id="copy" class="copy">Copy</button>
+			<span id="copy_status" role="status"></span>
 
 			<br />
 			<form action="/settings/encoded-restore/" method="POST">

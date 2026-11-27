@@ -1,5 +1,7 @@
 // @license http://www.gnu.org/licenses/agpl-3.0.html AGPL-3.0
 (function () {
+    // Fatal errors are recovered this many times per kind before the player gives up.
+    const MAX_RECOVERIES = 3;
     const configElement = document.getElementById('video_quality');
     const qualitySetting = configElement.getAttribute('data-value');
     if (Hls.isSupported()) {
@@ -17,6 +19,10 @@
                 }
                 return;
             }
+
+            // The copy below has its sources removed, so remember the MP4 to fall back to
+            var mp4Source = oldVideo.querySelector("source[type='video/mp4']");
+            var mp4Url = mp4Source ? mp4Source.src : "";
 
             // Replace video with copy that will have all "source" elements removed
             var newVideo = oldVideo.cloneNode(true);
@@ -46,6 +52,31 @@
             function initializeHls() {
                 newVideo.removeEventListener('play', initializeHls);
                 var hls = new Hls({ autoStartLoad: false });
+                var recoveries = { network: 0, media: 0 };
+                var qualitySelector = null;
+                var gaveUp = false;
+
+                function giveUp() {
+                    gaveUp = true;
+                    hls.destroy();
+                    if (qualitySelector) {
+                        qualitySelector.remove();
+                    }
+
+                    var message = document.createElement('p');
+                    message.classList.add('hls_error');
+                    message.setAttribute('role', 'status');
+                    newVideo.parentNode.appendChild(message);
+                    if (mp4Url) {
+                        message.textContent = 'This video could not be loaded with audio. Playing it without audio instead.';
+                        newVideo.src = mp4Url;
+                        newVideo.load();
+                        newVideo.play();
+                    } else {
+                        message.textContent = 'This video could not be played.';
+                    }
+                }
+
                 hls.loadSource(playlist);
                 hls.attachMedia(newVideo);
                 hls.on(Hls.Events.MANIFEST_PARSED, function () {
@@ -58,30 +89,31 @@
                         };
                     });
 
-                    addQualitySelector(newVideo, hls, availableLevels);
+                    qualitySelector = addQualitySelector(newVideo, hls, availableLevels);
 
                     hls.startLoad();
                     newVideo.play();
                 });
 
                 hls.on(Hls.Events.ERROR, function (event, data) {
-                    var errorType = data.type;
-                    var errorFatal = data.fatal;
-                    if (errorFatal) {
-                        switch (errorType) {
-                            case Hls.ErrorType.NETWORK_ERROR:
-                                hls.startLoad();
-                                break;
-                            case Hls.ErrorType.MEDIA_ERROR:
-                                hls.recoverMediaError();
-                                break;
-                            default:
-                                hls.destroy();
-                                break;
-                        }
+                    console.error("HLS error", data);
+                    if (!data.fatal || gaveUp) {
+                        return;
                     }
 
-                    console.error("HLS error", data);
+                    if (data.type === Hls.ErrorType.NETWORK_ERROR && recoveries.network < MAX_RECOVERIES) {
+                        // Wait 1 s, 2 s, then 4 s so a dead stream is not hammered.
+                        setTimeout(function () {
+                            if (!gaveUp) {
+                                hls.startLoad();
+                            }
+                        }, 1000 * 2 ** recoveries.network++);
+                    } else if (data.type === Hls.ErrorType.MEDIA_ERROR && recoveries.media < MAX_RECOVERIES) {
+                        recoveries.media++;
+                        hls.recoverMediaError();
+                    } else {
+                        giveUp();
+                    }
                 });
             }
 
@@ -107,6 +139,7 @@
                 });
 
                 videoElement.parentNode.appendChild(qualitySelector);
+                return qualitySelector;
             }
 
             newVideo.addEventListener('play', initializeHls);
