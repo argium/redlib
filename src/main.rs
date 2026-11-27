@@ -8,12 +8,13 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::ExitCode;
 use std::sync::LazyLock;
 
+use askama::Template;
 use futures_lite::FutureExt;
 use hyper::{header::HeaderValue, Body, Request, Response};
 use log::{info, warn};
 use redlib::client::{canonical_path, proxy, rate_limit_check, CLIENT};
 use redlib::server::{self, RequestExt};
-use redlib::utils::{error, redirect, ThemeAssets};
+use redlib::utils::{error, redirect, request_base_url, OpenSearchTemplate, ThemeAssets};
 use redlib::{assets, config, duplicates, headers, health, instance_info, post, search, settings, subreddit, user};
 
 use redlib::client::OAUTH_CLIENT;
@@ -64,13 +65,26 @@ async fn font() -> Result<Response<Body>, String> {
 	)
 }
 
-async fn opensearch() -> Result<Response<Body>, String> {
+/// Describes the search form with this instance's own URL. Without `REDLIB_FULL_URL` the URL comes
+/// from the `Host` header, so the answer depends on it and must be cached per host.
+async fn opensearch(req: Request<Body>) -> Result<Response<Body>, String> {
+	let Some(base_url) = request_base_url(&req) else {
+		return Ok(
+			Response::builder()
+				.status(400)
+				.header("content-type", "text/plain")
+				.body("Bad Request: a valid Host header is required".into())
+				.unwrap_or_default(),
+		);
+	};
+	let description = OpenSearchTemplate { base_url }.render().map_err(|e| e.to_string())?;
 	Ok(
 		Response::builder()
 			.status(200)
 			.header("content-type", "application/opensearchdescription+xml")
 			.header("Cache-Control", "public, max-age=1209600, s-maxage=86400")
-			.body(include_bytes!("../static/opensearch.xml").as_ref().into())
+			.header("Vary", "Host")
+			.body(description.into())
 			.unwrap_or_default(),
 	)
 }
@@ -258,7 +272,7 @@ fn build_app(hsts: Option<&str>) -> server::Server {
 	app.at("/Inter.var.woff2").get(|_| font().boxed());
 	app.at("/touch-icon-iphone.png").get(|_| iphone_logo().boxed());
 	app.at("/apple-touch-icon.png").get(|_| iphone_logo().boxed());
-	app.at("/opensearch.xml").get(|_| opensearch().boxed());
+	app.at("/opensearch.xml").get(|r| opensearch(r).boxed());
 	app.at("/playHLSVideo.js").get(|r| async move { assets::script_response("playHLSVideo.js", &r) }.boxed());
 	app.at("/hls.min.js").get(|r| async move { assets::script_response("hls.min.js", &r) }.boxed());
 	app.at("/highlighted.js").get(|r| async move { assets::script_response("highlighted.js", &r) }.boxed());
@@ -780,6 +794,52 @@ mod tests {
 		assert_eq!(status, 503, "{body}");
 		assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["status"], "degraded");
 		server.abort();
+	}
+
+	async fn descriptor_for(address: SocketAddr, headers: &[(&str, &str)]) -> (u16, String) {
+		let mut request = Request::get(format!("http://{address}/opensearch.xml"));
+		for (name, value) in headers {
+			request = request.header(*name, *value);
+		}
+		page_text(hyper::Client::new().request(request.body(Body::empty()).unwrap()).await.unwrap()).await
+	}
+
+	#[tokio::test]
+	async fn opensearch_and_og_descriptor_uses_the_request_host() {
+		let (address, server) = serve_app();
+
+		let (status, body) = descriptor_for(address, &[("host", "redlib.example")]).await;
+		assert_eq!(status, 200, "{body}");
+		assert!(body.contains("template=\"http://redlib.example/search\""), "{body}");
+		assert!(body.contains(">http://redlib.example/favicon.ico<"), "{body}");
+		assert!(body.contains("<moz:SearchForm>http://redlib.example/search<"), "{body}");
+		assert!(!body.contains("localhost:8080"), "{body}");
+
+		let (_, body) = descriptor_for(address, &[("host", "redlib.example"), ("x-forwarded-proto", "https")]).await;
+		assert!(body.contains("template=\"https://redlib.example/search\""), "{body}");
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn opensearch_and_og_descriptor_rejects_an_unusable_host() {
+		let (address, server) = serve_app();
+		for host in ["evil\"><x", "user@redlib.example"] {
+			let (status, body) = descriptor_for(address, &[("host", host)]).await;
+			assert_eq!(status, 400, "{host}: {body}");
+			assert!(!body.contains("<x"), "{host}: {body}");
+		}
+		server.abort();
+	}
+
+	#[sealed_test(env = [("REDLIB_FULL_URL", "https://libred.example/")])]
+	fn opensearch_and_og_descriptor_prefers_the_configured_full_url() {
+		let runtime = tokio::runtime::Runtime::new().unwrap();
+		let request = Request::get("/opensearch.xml").header("host", "redlib.example").body(Body::empty()).unwrap();
+		let (status, body) = runtime.block_on(async { page_text(opensearch(request).await.unwrap()).await });
+
+		assert_eq!(status, 200, "{body}");
+		assert!(body.contains("template=\"https://libred.example/search\""), "{body}");
+		assert!(!body.contains("redlib.example"), "{body}");
 	}
 
 	#[tokio::test]

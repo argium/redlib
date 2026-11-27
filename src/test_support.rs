@@ -26,6 +26,22 @@ pub async fn post_fixture(hls: bool) -> Post {
 	parse_post(&json!({ "data": data })).await
 }
 
+/// A post of `post_type` (`image`, `video`, `gif`, `gallery`, `link` or `self`) whose media and
+/// thumbnail were already rewritten to Redlib's proxy paths.
+pub async fn post_of_type(post_type: &str, media_url: &str, thumbnail_url: &str) -> Post {
+	let mut post = post_fixture(false).await;
+	post.post_type = post_type.to_string();
+	post.media.url = media_url.to_string();
+	post.thumbnail.url = thumbnail_url.to_string();
+	post
+}
+
+/// The `content` of the `<meta property="...">` tag named `property`.
+pub fn meta_content<'a>(html: &'a str, property: &str) -> Option<&'a str> {
+	let tag = html.split(&format!("<meta property=\"{property}\" content=\"")).nth(1)?;
+	tag.split('"').next()
+}
+
 /// One text post as Reddit sends it with `raw_json=1`: markup in the title is literal text, and
 /// the HTML body carries the visitor's `<img src=x>` as `&lt;img src=x&gt;`.
 pub async fn feed_posts() -> Vec<Post> {

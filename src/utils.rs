@@ -564,6 +564,14 @@ pub struct ErrorTemplate {
 	pub url: String,
 }
 
+/// The OpenSearch description browsers use for "Add search engine". `base_url` is the instance's
+/// public URL without a trailing slash.
+#[derive(Template)]
+#[template(path = "opensearch.xml")]
+pub struct OpenSearchTemplate {
+	pub base_url: String,
+}
+
 #[derive(Template)]
 #[template(path = "info.html")]
 pub struct InfoTemplate {
@@ -1617,11 +1625,44 @@ pub fn to_absolute_url(relative_path: &str) -> String {
 	format!("{}{}", config::get_setting("REDLIB_FULL_URL").unwrap_or_default(), relative_path)
 }
 
+/// The public base URL of this instance without a trailing slash, or `None` when it is unknown.
+///
+/// `REDLIB_FULL_URL` wins. Otherwise the scheme comes from `X-Forwarded-Proto` (`https`, else
+/// `http`) and the host from the request, which is accepted only when it parses as a plain
+/// `host[:port]`: the value ends up in XML and HTML.
+pub fn request_base_url(req: &Request<Body>) -> Option<String> {
+	if let Some(full_url) = get_setting("REDLIB_FULL_URL").filter(|url| !url.is_empty()) {
+		return Some(full_url.trim_end_matches('/').to_string());
+	}
+
+	let host = match req.headers().get(hyper::header::HOST) {
+		Some(value) => value.to_str().ok()?,
+		None => req.uri().authority()?.as_str(),
+	};
+	// `Authority` accepts `user@host`, which is not a host.
+	let authority = host.parse::<hyper::http::uri::Authority>().ok().filter(|_| !host.contains('@'))?;
+	let scheme = match req.headers().get("x-forwarded-proto").and_then(|proto| proto.to_str().ok()) {
+		Some("https") => "https",
+		_ => "http",
+	};
+	Some(format!("{scheme}://{authority}"))
+}
+
+/// Prefixes a site path (`/img/..`) with `base_url`. Anything else (empty, protocol-relative or
+/// already absolute) is returned unchanged.
+pub fn absolute_url(base_url: &str, url: &str) -> String {
+	if url.starts_with('/') && !url.starts_with("//") {
+		format!("{base_url}{url}")
+	} else {
+		url.to_string()
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::{
-		deflate_compress, deflate_decompress_limited, format_num, format_url, gating_metadata, html_page, nsfw_landing, read_body_limited, redirect, render_bullet_lists,
-		rewrite_emotes, rewrite_urls, should_be_nsfw_gated, url_path_basename, Post, Preferences,
+		absolute_url, deflate_compress, deflate_decompress_limited, format_num, format_url, gating_metadata, html_page, nsfw_landing, read_body_limited, redirect,
+		render_bullet_lists, request_base_url, rewrite_emotes, rewrite_urls, should_be_nsfw_gated, url_path_basename, Post, Preferences,
 	};
 	use crate::server::RequestExt;
 	use hyper::{Body, Request};
@@ -1647,6 +1688,52 @@ mod tests {
 		assert_eq!(response.status(), 403);
 		assert_eq!(response.headers()["content-type"], "text/html");
 		assert_eq!(hyper::body::to_bytes(response.into_body()).await.unwrap(), "<p>x</p>");
+	}
+
+	fn request_with(headers: &[(&str, &str)]) -> Request<Body> {
+		let mut builder = Request::get("/opensearch.xml");
+		for (name, value) in headers {
+			builder = builder.header(*name, *value);
+		}
+		builder.body(Body::empty()).unwrap()
+	}
+
+	#[test]
+	fn opensearch_and_og_request_base_url_comes_from_the_host() {
+		assert_eq!(request_base_url(&request_with(&[("host", "redlib.example")])).as_deref(), Some("http://redlib.example"));
+		assert_eq!(request_base_url(&request_with(&[("host", "127.0.0.1:8080")])).as_deref(), Some("http://127.0.0.1:8080"));
+	}
+
+	#[test]
+	fn opensearch_and_og_request_base_url_follows_the_forwarded_scheme() {
+		let with_proto = |proto| request_with(&[("host", "redlib.example"), ("x-forwarded-proto", proto)]);
+		assert_eq!(request_base_url(&with_proto("https")).as_deref(), Some("https://redlib.example"));
+		assert_eq!(request_base_url(&with_proto("http")).as_deref(), Some("http://redlib.example"));
+		assert_eq!(request_base_url(&with_proto("javascript")).as_deref(), Some("http://redlib.example"));
+	}
+
+	#[test]
+	fn opensearch_and_og_request_base_url_is_unknown_without_a_usable_host() {
+		assert_eq!(request_base_url(&request_with(&[])), None);
+		for host in ["evil\"><x", "user@redlib.example", "a b", ""] {
+			assert_eq!(request_base_url(&request_with(&[("host", host)])), None, "{host:?}");
+		}
+	}
+
+	#[sealed_test(env = [("REDLIB_FULL_URL", "https://libred.example/")])]
+	fn opensearch_and_og_request_base_url_prefers_the_configured_full_url() {
+		let request = request_with(&[("host", "redlib.example")]);
+		assert_eq!(request_base_url(&request).as_deref(), Some("https://libred.example"));
+		assert_eq!(request_base_url(&request_with(&[])).as_deref(), Some("https://libred.example"));
+	}
+
+	#[test]
+	fn opensearch_and_og_absolute_url_only_prefixes_site_paths() {
+		assert_eq!(absolute_url("https://redlib.example", "/thumb/a/b.jpg"), "https://redlib.example/thumb/a/b.jpg");
+		for unchanged in ["", "https://i.imgur.com/x.png", "//cdn.example/x.png"] {
+			assert_eq!(absolute_url("https://redlib.example", unchanged), unchanged);
+		}
+		assert_eq!(absolute_url("", "/thumb/a/b.jpg"), "/thumb/a/b.jpg");
 	}
 
 	#[test]

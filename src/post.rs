@@ -4,7 +4,8 @@ use crate::config::get_setting;
 use crate::server::RequestExt;
 use crate::subreddit::{can_access_quarantine, quarantine};
 use crate::utils::{
-	error, format_num, get_filters, nsfw_landing, param, parse_post, rewrite_emotes, setting, template, time, val, Author, Awards, Comment, Flair, FlairPart, Post, Preferences,
+	absolute_url, error, format_num, get_filters, nsfw_landing, param, parse_post, request_base_url, rewrite_emotes, setting, template, time, val, Author, Awards, Comment,
+	Flair, FlairPart, Post, Preferences,
 };
 use askama::Template;
 use hyper::{Body, Request, Response};
@@ -24,6 +25,15 @@ struct PostTemplate {
 	url: String,
 	url_without_query: String,
 	comment_query: String,
+	/// The instance's public URL, or empty when unknown; link previews need absolute URLs.
+	base_url: String,
+}
+
+impl PostTemplate {
+	/// `url` as an absolute URL when the instance's public URL is known.
+	fn absolute(&self, url: &str) -> String {
+		absolute_url(&self.base_url, url)
+	}
 }
 
 static COMMENT_SEARCH_CAPTURE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\?q=(.*)&type=comment").unwrap());
@@ -96,6 +106,7 @@ pub async fn item(req: Request<Body>) -> Result<Response<Body>, String> {
 				single_thread,
 				url: req_url,
 				comment_query: query,
+				base_url: request_base_url(&req).unwrap_or_default(),
 			}))
 		}
 		// If the Reddit API returns an error, exit and send error page to user
@@ -289,6 +300,44 @@ mod tests {
 		paragraph.split_once('>').expect("paragraph tag closes").1.trim().to_string()
 	}
 
+	fn render_post(post: Post, single_thread: bool, base_url: &str) -> String {
+		PostTemplate {
+			comments: Vec::new(),
+			url: post.permalink.clone(),
+			url_without_query: post.permalink.clone(),
+			post,
+			sort: String::new(),
+			prefs: Preferences::default(),
+			single_thread,
+			comment_query: String::new(),
+			base_url: base_url.to_string(),
+		}
+		.render()
+		.unwrap()
+	}
+
+	#[tokio::test]
+	async fn opensearch_and_og_meta_urls_are_absolute_when_the_base_is_known() {
+		use crate::test_support::{meta_content, post_of_type};
+		let image = render_post(post_of_type("image", "/img/abc.jpg", "/thumb/b/xyz.jpg").await, false, "https://redlib.example");
+		assert_eq!(meta_content(&image, "og:image"), Some("https://redlib.example/thumb/b/xyz.jpg"));
+		assert_eq!(meta_content(&image, "twitter:image"), Some("https://redlib.example/thumb/b/xyz.jpg"));
+		assert_eq!(meta_content(&image, "og:url"), Some("https://redlib.example/r/test/comments/link1/a_link/"));
+		assert_eq!(meta_content(&image, "twitter:url"), Some("https://redlib.example/r/test/comments/link1/a_link/"));
+
+		for post_type in ["video", "gif"] {
+			let video = render_post(post_of_type(post_type, "/vid/abc/720.mp4", "").await, false, "https://redlib.example");
+			assert_eq!(meta_content(&video, "og:video"), Some("https://redlib.example/vid/abc/720.mp4"), "{post_type}");
+		}
+	}
+
+	#[tokio::test]
+	async fn opensearch_and_og_meta_urls_stay_relative_without_a_base() {
+		use crate::test_support::{meta_content, post_of_type};
+		let image = render_post(post_of_type("image", "/img/abc.jpg", "/thumb/b/xyz.jpg").await, false, "");
+		assert_eq!(meta_content(&image, "og:image"), Some("/thumb/b/xyz.jpg"));
+	}
+
 	#[tokio::test]
 	async fn flair_gallery_and_prefs_versioning_links_post_flair_search_encodes_the_flair() {
 		let html = PostTemplate {
@@ -300,6 +349,7 @@ mod tests {
 			url: "/r/test/comments/f1/flair/".to_string(),
 			url_without_query: "/r/test/comments/f1/flair/".to_string(),
 			comment_query: String::new(),
+			base_url: String::new(),
 		}
 		.render()
 		.unwrap();
