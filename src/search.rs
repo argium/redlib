@@ -7,6 +7,7 @@ use crate::{
 };
 use askama::Template;
 use hyper::{Body, Request, Response};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -110,15 +111,7 @@ pub async fn find(req: Request<Body>) -> Result<Response<Body>, String> {
 			posts: Vec::new(),
 			subreddits,
 			sub,
-			params: SearchParams {
-				q: query.replace('"', "&quot;"),
-				sort,
-				t: param(&path, "t").unwrap_or_default(),
-				before: param(&path, "after").unwrap_or_default(),
-				after: String::new(),
-				restrict_sr: param(&path, "restrict_sr").unwrap_or_default(),
-				typed,
-			},
+			params: search_params(&path, query, sort, typed, String::new()),
 			prefs: Preferences::new(&req),
 			url,
 			is_filtered: true,
@@ -136,15 +129,7 @@ pub async fn find(req: Request<Body>) -> Result<Response<Body>, String> {
 					posts,
 					subreddits,
 					sub,
-					params: SearchParams {
-						q: query.replace('"', "&quot;"),
-						sort,
-						t: param(&path, "t").unwrap_or_default(),
-						before: param(&path, "after").unwrap_or_default(),
-						after,
-						restrict_sr: param(&path, "restrict_sr").unwrap_or_default(),
-						typed,
-					},
+					params: search_params(&path, query, sort, typed, after),
 					prefs: Preferences::new(&req),
 					url,
 					is_filtered: false,
@@ -165,12 +150,28 @@ pub async fn find(req: Request<Body>) -> Result<Response<Body>, String> {
 	}
 }
 
-async fn search_subreddits(q: &str, typed: &str) -> Vec<Subreddit> {
-	let limit = if typed == "sr_user" { "50" } else { "3" };
-	let subreddit_search_path = format!("/subreddits/search.json?q={}&limit={limit}", q.replace(' ', "+"));
+/// The search as the result page shows it. `q` stays raw text: the template HTML-escapes it where
+/// displayed and percent-encodes it inside links.
+fn search_params(path: &str, query: String, sort: String, typed: String, after: String) -> SearchParams {
+	SearchParams {
+		q: query,
+		sort,
+		t: param(path, "t").unwrap_or_default(),
+		before: param(path, "after").unwrap_or_default(),
+		after,
+		restrict_sr: param(path, "restrict_sr").unwrap_or_default(),
+		typed,
+	}
+}
 
+fn subreddit_search_path(q: &str, typed: &str) -> String {
+	let limit = if typed == "sr_user" { "50" } else { "3" };
+	format!("/subreddits/search.json?q={}&limit={limit}", utf8_percent_encode(q, NON_ALPHANUMERIC))
+}
+
+async fn search_subreddits(q: &str, typed: &str) -> Vec<Subreddit> {
 	// Send a request to the url
-	let listing = json(subreddit_search_path, false).await.unwrap_or_default();
+	let listing = json(subreddit_search_path(q, typed), false).await.unwrap_or_default();
 	subreddit_results(&listing, utils::sfw_only())
 }
 
@@ -200,7 +201,7 @@ fn subreddit_results(listing: &serde_json::Value, sfw_only: bool) -> Vec<Subredd
 
 #[cfg(test)]
 mod tests {
-	use super::{subreddit_results, SearchParams, SearchTemplate};
+	use super::{search_params, subreddit_results, subreddit_search_path, SearchParams, SearchTemplate, Subreddit};
 	use crate::test_support::post_fixture;
 	use crate::utils::Preferences;
 	use askama::Template;
@@ -242,6 +243,80 @@ mod tests {
 		assert!(with_hls.find(&hls) < with_hls.find(&player), "hls.min.js must come first so playHLSVideo.js can use Hls");
 		assert!(!rendered_results("on", false).await.contains("hls.min.js"), "no HLS post, no hls.min.js");
 		assert!(!rendered_results("off", true).await.contains("hls.min.js"), "use_hls off, no hls.min.js");
+	}
+
+	const AWKWARD_QUERY: &str = r#"C++ & AT&T #1 100% "x""#;
+	const AWKWARD_QUERY_ENCODED: &str = "C%2B%2B%20%26%20AT%26T%20%231%20100%25%20%22x%22";
+
+	fn render_search(q: &str, typed: &str) -> String {
+		SearchTemplate {
+			posts: Vec::new(),
+			subreddits: vec![Subreddit {
+				name: "cpp".to_string(),
+				url: "/r/cpp/".to_string(),
+				icon: String::new(),
+				description: String::new(),
+				subscribers: ("1".to_string(), "1".to_string()),
+			}],
+			sub: String::new(),
+			params: SearchParams {
+				q: q.to_string(),
+				sort: "relevance".to_string(),
+				t: "all".to_string(),
+				before: "t3_before".to_string(),
+				after: "t3_after".to_string(),
+				restrict_sr: "on".to_string(),
+				typed: typed.to_string(),
+			},
+			prefs: Preferences::default(),
+			url: "/search".to_string(),
+			is_filtered: false,
+			all_posts_filtered: false,
+			all_posts_hidden_nsfw: false,
+			no_posts: true,
+		}
+		.render()
+		.unwrap()
+	}
+
+	#[test]
+	fn search_encoding_and_comments_subreddit_lookup_encodes_the_query() {
+		assert_eq!(
+			subreddit_search_path(AWKWARD_QUERY, ""),
+			format!("/subreddits/search.json?q={AWKWARD_QUERY_ENCODED}&limit=3")
+		);
+		assert_eq!(subreddit_search_path("rust", "sr_user"), "/subreddits/search.json?q=rust&limit=50");
+	}
+
+	#[test]
+	fn search_encoding_and_comments_params_keep_the_query_as_raw_text() {
+		let path = "/search.json?q=x&t=week&restrict_sr=on&after=t3_abc&raw_json=1";
+		let params = search_params(path, r#"say "hi""#.to_string(), "top".to_string(), "all".to_string(), "t3_next".to_string());
+		assert_eq!(params.q, r#"say "hi""#);
+		assert_eq!((params.t.as_str(), params.restrict_sr.as_str()), ("week", "on"));
+		assert_eq!((params.before.as_str(), params.after.as_str()), ("t3_abc", "t3_next"));
+	}
+
+	#[test]
+	fn search_encoding_and_comments_links_carry_the_encoded_query() {
+		// "all" shows the "more subreddit results" link and the PREV/NEXT footer; "sr_user" shows the "back" link.
+		for (typed, links) in [("all", 3), ("sr_user", 1)] {
+			let html = render_search(AWKWARD_QUERY, typed);
+			assert_eq!(html.matches("?q=").count(), links, "{typed}: link count");
+			assert_eq!(
+				html.matches(&format!("?q={AWKWARD_QUERY_ENCODED}&")).count(),
+				links,
+				"{typed}: every link carries the encoded query"
+			);
+		}
+	}
+
+	#[test]
+	fn search_encoding_and_comments_query_is_html_escaped_once_where_shown() {
+		let html = render_search(AWKWARD_QUERY, "all");
+		assert!(html.contains(r#"value="C++ &#38; AT&#38;T #1 100% &#34;x&#34;""#), "search box");
+		assert!(html.contains("search results - C++ &#38; AT&#38;T #1 100% &#34;x&#34;</title>"), "title");
+		assert!(!html.contains("&quot;") && !html.contains("&amp;quot;"), "no hand-made entities");
 	}
 
 	fn listing() -> serde_json::Value {

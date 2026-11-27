@@ -150,9 +150,9 @@ fn query_comments(
 			results.append(&mut query_comments(&data["replies"], post_link, post_author, highlighted_comment, filters, query, prefs));
 		}
 
-		let c = build_comment(comment, data, Vec::new(), post_link, post_author, highlighted_comment, filters, prefs);
-		if c.body.to_lowercase().contains(&query.to_lowercase()) {
-			results.push(c);
+		// Match the comment's text: `c.body` is rendered HTML, so `href` or `class` would hit nearly every comment.
+		if val(comment, "body").to_lowercase().contains(&query.to_lowercase()) {
+			results.push(build_comment(comment, data, Vec::new(), post_link, post_author, highlighted_comment, filters, prefs));
 		}
 	}
 
@@ -287,6 +287,42 @@ mod tests {
 		let start = html.find("class=\"comment_score\"").expect("comment has a score cell");
 		let paragraph = html[start..].split("</p>").next().unwrap();
 		paragraph.split_once('>').expect("paragraph tag closes").1.trim().to_string()
+	}
+
+	/// A comment as Reddit sends it: the raw `body` text and its rendered `body_html`.
+	fn comment_with(id: &str, body: &str, body_html: &str) -> serde_json::Value {
+		json!({ "kind": "t1", "data": {
+			"id": id,
+			"author": "someone",
+			"body": body,
+			"body_html": body_html,
+			"created_utc": 1_700_000_000.0,
+			"parent_id": "t3_abc",
+		} })
+	}
+
+	fn matching_ids(listing: &serde_json::Value, query: &str) -> Vec<String> {
+		let comments = query_comments(listing, "/r/test/comments/abc/post/", "op", "", &HashSet::new(), query, &Preferences::default());
+		comments.into_iter().map(|comment| comment.id).collect()
+	}
+
+	#[test]
+	fn search_encoding_and_comments_matches_text_not_markup() {
+		let listing = json!({ "data": { "children": [
+			comment_with("link", "[docs](https://example.com/page)", "<div class=\"md\"><p><a href=\"https://example.com/page\">docs</a></p></div>"),
+			comment_with("plain", "Rust makes AT&T cheaper", "<div class=\"md\"><p>Rust makes AT&amp;T cheaper</p></div>"),
+			comment_with("gone", "[removed]", "<div class=\"md\"><p>[removed]</p></div>"),
+		] } });
+		for markup in ["href", "class", "md", "div"] {
+			assert_eq!(matching_ids(&listing, markup), Vec::<String>::new(), "{markup} is markup, not comment text");
+		}
+		assert_eq!(matching_ids(&listing, "docs"), ["link"]);
+		assert_eq!(matching_ids(&listing, "RUST"), ["plain"], "matching ignores letter case");
+		assert_eq!(
+			matching_ids(&listing, "undelete"),
+			Vec::<String>::new(),
+			"a removed comment is not found by its archive link"
+		);
 	}
 
 	#[test]
