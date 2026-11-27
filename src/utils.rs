@@ -289,31 +289,36 @@ pub struct GalleryMedia {
 }
 
 impl GalleryMedia {
+	/// The displayable items of a gallery. Reddit leaves out the image data of items it failed to
+	/// process (`status` is not `valid`), and an item can name media that has no metadata at all.
 	fn parse(items: &Value, metadata: &Value) -> Vec<Self> {
 		items
 			.as_array()
 			.unwrap_or(&Vec::new())
 			.iter()
-			.map(|item| {
+			.filter_map(|item| {
 				// For each image in gallery
 				let media_id = item["media_id"].as_str().unwrap_or_default();
-				let image = &metadata[media_id]["s"];
-				let image_type = &metadata[media_id]["m"];
+				let media = &metadata[media_id];
+				let image = &media["s"];
 
-				let url = if image_type == "image/gif" {
+				let url = if media["m"] == "image/gif" {
 					image["gif"].as_str().unwrap_or_default()
 				} else {
 					image["u"].as_str().unwrap_or_default()
 				};
+				if media["status"] != "valid" || url.is_empty() {
+					return None;
+				}
 
 				// Construct gallery items
-				Self {
+				Some(Self {
 					url: format_url(url),
 					width: image["x"].as_i64().unwrap_or_default(),
 					height: image["y"].as_i64().unwrap_or_default(),
 					caption: item["caption"].as_str().unwrap_or_default().to_string(),
 					outbound_url: item["outbound_url"].as_str().unwrap_or_default().to_string(),
-				}
+				})
 			})
 			.collect::<Vec<Self>>()
 	}
@@ -1979,6 +1984,32 @@ mod tests {
 		let comment_input = r#"<div class="comment_body "><div class="md"><p>:2028:</p></div></div>"#;
 		let output = r#"<div class="comment_body "><div class="md"><p><img loading="lazy" src="/emote/t5_31hpy/PW6WsOaLcd.png" width="60" height="60" style="vertical-align:text-bottom"></p></div></div>"#;
 		assert_eq!(rewrite_emotes(&json_input, comment_input.to_string()), output);
+	}
+
+	#[tokio::test]
+	async fn flair_gallery_and_prefs_versioning_gallery_skips_invalid_items() {
+		let listing = serde_json::json!({ "data": { "children": [{ "kind": "t3", "data": {
+			"id": "g1",
+			"subreddit": "test",
+			"permalink": "/r/test/comments/g1/gallery/",
+			"url": "https://www.reddit.com/gallery/g1",
+			"is_gallery": true,
+			"gallery_data": { "items": [
+				{ "media_id": "ok1", "caption": "photo" },
+				{ "media_id": "failed1", "caption": "failed upload" },
+				{ "media_id": "unknown1", "caption": "no metadata" },
+				{ "media_id": "gif1", "caption": "animation" },
+			] },
+			"media_metadata": {
+				"ok1": { "status": "valid", "e": "Image", "m": "image/jpeg", "s": { "u": "https://i.redd.it/ok1.jpg", "x": 640, "y": 480 } },
+				"failed1": { "status": "failed" },
+				"gif1": { "status": "valid", "e": "AnimatedImage", "m": "image/gif", "s": { "gif": "https://i.redd.it/gif1.gif", "x": 10, "y": 10 } },
+			},
+		} }] } });
+
+		let (posts, _) = Post::from_listing(&listing).await.unwrap();
+		let gallery: Vec<_> = posts[0].gallery.iter().map(|item| (item.caption.as_str(), item.url.as_str())).collect();
+		assert_eq!(gallery, [("photo", "/img/ok1.jpg"), ("animation", "/img/gif1.gif")]);
 	}
 
 	#[test]
