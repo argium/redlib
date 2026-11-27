@@ -513,7 +513,26 @@ Every regression test was seen failing before its fix, except where noted.
 ### Not verified
 
 - The wiring in `subreddit::community`, `user::profile` and both RSS handlers (fail-closed metadata, NSFW RSS refusal) needs live Reddit; the pure pieces they call are tested. `subscriptions_filters` itself needs live Reddit; its path helper is tested.
-- The `main()` mapping from an error to `ExitCode::FAILURE` is a three-line `match`; it is checked by reading the code and the binary smoke runs above, not by a test.
+- The `main()` mapping from a startup error to `ExitCode::FAILURE` is not unit tested. `tests/startup_config.rs` covers the config failure path (exit 1) through the binary.
 - Valid short and share ids reaching `canonical_path()` were not exercised (live Reddit).
 - Markdown links with a `javascript:` scheme are not rewritten; the CSP (`script-src 'self' blob:`) blocks them.
 - Slowloris behaviour was tested on Windows with Tokio's timer; hyper's header timeout is platform independent.
+
+### Review
+
+A reviewer read the slice. No Critical findings. Verified findings and their dispositions:
+
+| Finding | Disposition | Regression test |
+| --- | --- | --- |
+| An empty `IPV4_ONLY=` or `IPV6_ONLY=` crashed startup (exit 2, variable not named); before the slice any set value meant true | Fixed: `parse_flag` keeps the strict booleans and treats an empty value as false | `startup_config_and_bind_empty_env_value_counts_as_unset` (red: `invalid value for one of the arguments`) |
+| The fail-closed config path (`Config::load`, forcing `CONFIG`, exit code) had no end-to-end test | Fixed: the test runs the built binary in a temp dir with a malformed `redlib.toml` | `startup_config_malformed_file_stops_startup_with_exit_1_and_names_the_file` (red with `load` swallowing the error: the binary kept running until the 20 s guard) |
+| `--help`/`--version` forced the config first, so a bad `redlib.toml` blocked them | Fixed: `main` parses arguments before forcing `CONFIG` | `startup_config_version_works_with_a_malformed_file` (red: exit 1 with the parse error). `--help` is not enabled in this clap build, so only `--version` is covered |
+| The redirect tests missed a tab case and accepted any escaping of the fallback body | Fixed: added `"/	/evil.com"`; the body is asserted exactly | `redirect_safety_rejects_offsite_targets`, `redirect_safety_escapes_fallback_body` (red when the check is narrowed to CR/LF, and when `encode_attribute` is swapped for `encode_minimal`) |
+| Subreddit search listed NSFW communities on an SFW-only instance | Fixed: `subreddit_results` drops `over18` entries when `sfw_only()` | `sfw_only_search_results_leave_out_nsfw_communities` (red: `["family", "adult"]` vs `["family"]`) |
+
+Accepted, not fixed:
+
+- The Accept-Encoding cache test only checks parsing, so re-adding `#[cached]` to `determine_compressor` would pass it.
+- `DEFAULT_HEADER_READ_TIMEOUT` is not exercised: the timeout test sets its own value.
+- The SFW-only wiring in `subreddit::community`, `user::profile` and both RSS handlers stays review-only (it needs live Reddit or a `json()` seam).
+- Not verified: whether the wiki, `/about` and user-comment listings need NSFW gating on SFW-only instances; the Reddit payload for `t1` items was not checked.
