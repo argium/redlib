@@ -43,8 +43,8 @@ USER redlib
 # Document that we intend to expose port 8080 to whoever runs the container
 EXPOSE 8080
 
-# Run a healthcheck every minute to make sure redlib is functional
-HEALTHCHECK --interval=1m --timeout=3s CMD wget --spider -q http://localhost:8080/settings || exit 1
+# Healthy once /healthz answers 200, which needs a live OAuth token, so allow time to start.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 CMD ["redlib", "--healthcheck"]
 
 # Add container metadata
 LABEL org.opencontainers.image.authors="sigaloid"
