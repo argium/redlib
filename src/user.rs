@@ -5,7 +5,6 @@ use crate::utils::{error, filter_posts, format_url, gating_metadata, get_filters
 use crate::{config, utils};
 use askama::Template;
 use chrono::DateTime;
-use htmlescape::decode_html;
 use hyper::{Body, Request, Response};
 use time::{macros::format_description, OffsetDateTime};
 
@@ -136,12 +135,10 @@ async fn user(name: &str) -> Result<User, String> {
 }
 
 pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
-	if config::get_setting("REDLIB_ENABLE_RSS").is_none() {
+	if !utils::enable_rss() {
 		return Ok(error(req, "RSS is disabled on this instance.").await.unwrap_or_default());
 	}
-	use crate::utils::rewrite_urls;
 	use hyper::header::CONTENT_TYPE;
-	use rss::{ChannelBuilder, Item};
 
 	// Get user
 	let user_str = req.param("name").unwrap_or_default();
@@ -160,27 +157,8 @@ pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
 	// Get posts
 	let (posts, _) = Post::fetch(&path, false).await?;
 
-	// Build the RSS feed
-	let channel = ChannelBuilder::default()
-		.title(user_str)
-		.description(user_obj.description)
-		.items(
-			posts
-				.into_iter()
-				.map(|post| Item {
-					title: Some(post.title.to_string()),
-					link: Some(format_url(&utils::get_post_url(&post))),
-					author: Some(post.author.name),
-					pub_date: Some(DateTime::from_timestamp(post.created_ts as i64, 0).unwrap_or_default().to_rfc2822()),
-					content: Some(rewrite_urls(&decode_html(&post.body).unwrap_or_else(|_| post.body.clone()))),
-					..Default::default()
-				})
-				.collect::<Vec<_>>(),
-		)
-		.build();
-
-	// Serialize the feed to RSS
-	let body = channel.to_string().into_bytes();
+	let link = format!("{}/user/{user_str}", config::get_setting("REDLIB_FULL_URL").unwrap_or_default());
+	let body = feed_xml(&user_str, &user_obj.description, &link, posts).into_bytes();
 
 	// Create the HTTP response
 	let mut res = Response::new(Body::from(body));
@@ -189,10 +167,37 @@ pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
 	Ok(res)
 }
 
+/// The RSS 2.0 document for a user's posts and comments.
+fn feed_xml(name: &str, description: &str, link: &str, posts: Vec<Post>) -> String {
+	use crate::utils::rewrite_urls;
+	use rss::{ChannelBuilder, Item};
+
+	ChannelBuilder::default()
+		.title(name)
+		.description(description)
+		.link(link)
+		.items(
+			posts
+				.into_iter()
+				.map(|post| Item {
+					title: Some(post.title.to_string()),
+					link: Some(format_url(&utils::get_post_url(&post))),
+					author: Some(post.author.name),
+					pub_date: Some(DateTime::from_timestamp(post.created_ts as i64, 0).unwrap_or_default().to_rfc2822()),
+					content: Some(rewrite_urls(&post.body)),
+					..Default::default()
+				})
+				.collect::<Vec<_>>(),
+		)
+		.build()
+		.to_string()
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
 	use crate::test_support::post_fixture;
+	use sealed_test::prelude::*;
 
 	async fn rendered_profile(use_hls: &str, hls_post: bool) -> String {
 		UserTemplate {
@@ -225,6 +230,26 @@ mod tests {
 		assert!(with_hls.find(&hls) < with_hls.find(&player), "hls.min.js must come first so playHLSVideo.js can use Hls");
 		assert!(!rendered_profile("on", false).await.contains("hls.min.js"), "no HLS post, no hls.min.js");
 		assert!(!rendered_profile("off", true).await.contains("hls.min.js"), "use_hls off, no hls.min.js");
+	}
+
+	#[tokio::test]
+	async fn rss_feeds_user_feed_has_a_link_and_keeps_typed_text_as_text() {
+		let xml = feed_xml("spez", "About spez", "https://redlib.example/user/spez", crate::test_support::feed_posts().await);
+
+		let channel = rss::Channel::read_from(xml.as_bytes()).expect("the feed is well-formed RSS");
+		assert_eq!(channel.link(), "https://redlib.example/user/spez");
+		let item = &channel.items()[0];
+		assert_eq!(item.title(), Some("Q&A <b>\"x\"</b>"));
+		let content = item.content().unwrap();
+		assert!(content.contains("I typed &lt;img src=x&gt; &amp; left"), "{content}");
+		assert!(!content.contains("<img"), "typed text must not become markup: {content}");
+	}
+
+	#[test]
+	#[sealed_test(env = [("REDLIB_ENABLE_RSS", "off")])]
+	fn rss_feeds_user_off_refuses_before_fetching() {
+		let request = Request::get("/user/spez.rss").body(Body::empty()).unwrap();
+		assert!(crate::test_support::answer_without_fetching(rss, request).contains("RSS is disabled"));
 	}
 
 	#[tokio::test(flavor = "multi_thread")]

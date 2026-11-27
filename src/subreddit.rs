@@ -8,7 +8,6 @@ use crate::{client::json, server::RequestExt, server::ResponseExt};
 use crate::{config, utils};
 use askama::Template;
 use cookie::Cookie;
-use htmlescape::decode_html;
 use hyper::{Body, Request, Response};
 
 use chrono::DateTime;
@@ -578,7 +577,7 @@ async fn subreddit(sub: &str, quarantined: bool) -> Result<Subreddit, String> {
 }
 
 pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
-	if config::get_setting("REDLIB_ENABLE_RSS").is_none() {
+	if !utils::enable_rss() {
 		return Ok(error(req, "RSS is disabled on this instance.").await.unwrap_or_default());
 	}
 
@@ -593,7 +592,7 @@ pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
 	};
 
 	// Get path
-	let path = format!("/r/{sub}/{sort}.json?{}", req.uri().query().unwrap_or_default());
+	let path = feed_path(&sub, &sort, req.uri().query().unwrap_or_default());
 
 	// Get subreddit link
 	let subreddit_link: String = format!("{}/r/{sub}", config::get_setting("REDLIB_FULL_URL").unwrap_or_default());
@@ -607,11 +606,27 @@ pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
 	// Get posts
 	let (posts, _) = Post::fetch(&path, false).await?;
 
-	// Build the RSS feed
-	let channel = ChannelBuilder::default()
+	let body = feed_xml(&subreddit, &subreddit_link, posts).into_bytes();
+
+	// Create the HTTP response
+	let mut res = Response::new(Body::from(body));
+	res.headers_mut().insert(CONTENT_TYPE, hyper::header::HeaderValue::from_static("application/rss+xml"));
+
+	Ok(res)
+}
+
+/// The listing a subreddit feed is built from. `raw_json=1` stops Reddit entity-escaping titles,
+/// which the RSS writer escapes itself.
+fn feed_path(sub: &str, sort: &str, query: &str) -> String {
+	format!("/r/{sub}/{sort}.json?{query}&raw_json=1")
+}
+
+/// The RSS 2.0 document for a subreddit's posts.
+fn feed_xml(subreddit: &Subreddit, link: &str, posts: Vec<Post>) -> String {
+	ChannelBuilder::default()
 		.title(&subreddit.title)
 		.description(&subreddit.description)
-		.link(&subreddit_link)
+		.link(link)
 		.items(
 			posts
 				.into_iter()
@@ -620,7 +635,7 @@ pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
 						title: Some(post.title.to_string()),
 						link: Some(format_url(&utils::get_post_url(&post))),
 						author: Some(post.author.name.to_string()),
-						content: Some(rewrite_urls(&decode_html(&post.body).unwrap())),
+						content: Some(rewrite_urls(&post.body)),
 						pub_date: Some(DateTime::from_timestamp(post.created_ts as i64, 0).unwrap_or_default().to_rfc2822()),
 						description: Some(format!("<a href='{}'>Comments</a>", to_absolute_url(&post.permalink))),
 						..Default::default()
@@ -631,16 +646,8 @@ pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
 				})
 				.collect::<Vec<_>>(),
 		)
-		.build();
-
-	// Serialize the feed to RSS
-	let body = channel.to_string().into_bytes();
-
-	// Create the HTTP response
-	let mut res = Response::new(Body::from(body));
-	res.headers_mut().insert(CONTENT_TYPE, hyper::header::HeaderValue::from_static("application/rss+xml"));
-
-	Ok(res)
+		.build()
+		.to_string()
 }
 
 // Set enclosure image for RSS feed item
@@ -662,8 +669,8 @@ fn apply_enclosure(item: &mut Item, post: &Post) {
 fn get_rss_image(post: &Post) -> Option<Enclosure> {
 	let image_url = match post.post_type.as_str() {
 		"image" => Some(post.media.url.clone()),
-		"gallery" => post.gallery.first().and_then(|media| decode_html(&media.url).ok()),
-		"gif" | "video" => decode_html(&post.media.poster).ok(),
+		"gallery" => post.gallery.first().map(|media| media.url.clone()),
+		"gif" | "video" => Some(post.media.poster.clone()),
 		_ => None,
 	};
 
@@ -701,6 +708,7 @@ mod tests {
 	use super::*;
 	use crate::test_support::post_fixture;
 	use route_recognizer::Params;
+	use sealed_test::prelude::*;
 	use std::sync::Mutex;
 
 	#[tokio::test]
@@ -755,6 +763,35 @@ mod tests {
 		assert!(with_hls.find(&hls) < with_hls.find(&player), "hls.min.js must come first so playHLSVideo.js can use Hls");
 		assert!(!rendered_listing("on", false).await.contains("hls.min.js"), "no HLS post, no hls.min.js");
 		assert!(!rendered_listing("off", true).await.contains("hls.min.js"), "use_hls off, no hls.min.js");
+	}
+
+	#[test]
+	fn rss_feeds_subreddit_listing_is_fetched_as_raw_json() {
+		assert_eq!(feed_path("rust", "top", "t=week"), "/r/rust/top.json?t=week&raw_json=1");
+	}
+
+	#[tokio::test]
+	async fn rss_feeds_subreddit_feed_keeps_text_as_the_visitor_wrote_it() {
+		let subreddit = Subreddit {
+			title: "Rust & Co".to_string(),
+			..Subreddit::default()
+		};
+		let xml = feed_xml(&subreddit, "https://redlib.example/r/rust", crate::test_support::feed_posts().await);
+
+		let channel = rss::Channel::read_from(xml.as_bytes()).expect("the feed is well-formed RSS");
+		let item = &channel.items()[0];
+		assert_eq!((channel.title(), channel.link()), ("Rust & Co", "https://redlib.example/r/rust"));
+		assert_eq!(item.title(), Some("Q&A <b>\"x\"</b>"));
+		let content = item.content().unwrap();
+		assert!(content.contains("I typed &lt;img src=x&gt; &amp; left"), "{content}");
+		assert!(!content.contains("<img"), "typed text must not become markup: {content}");
+	}
+
+	#[test]
+	#[sealed_test(env = [("REDLIB_ENABLE_RSS", "off")])]
+	fn rss_feeds_subreddit_off_refuses_before_fetching() {
+		let request = Request::get("/r/rust.rss").body(Body::empty()).unwrap();
+		assert!(crate::test_support::answer_without_fetching(rss, request).contains("RSS is disabled"));
 	}
 
 	#[test]
