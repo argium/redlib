@@ -327,22 +327,22 @@ figcaption {
     transition: all 0.1s ease-in-out;
 }
 
-#goback {
+.popup-goback {
     background: var(--popup-goback-background);
     color: var(--popup-goback-text);
 }
 
-#goback:not(.selected):hover {
+.popup-goback:not(.selected):hover {
     opacity: 0.8;
 }
 
-#toreddit {
+.popup-toreddit {
     background: var(--popup-toreddit-background);
     color: var(--popup-toreddit-text);
     border: 1px solid var(--popup-red);
 }
 
-#toreddit:not(.selected):hover {
+.popup-toreddit:not(.selected):hover {
     background: var(--popup-toreddit-text);
     color: var(--popup-toreddit-background);
 }
@@ -352,7 +352,7 @@ figcaption {
     opacity: 1;
 }
 
-#reddit_url {
+.popup-inner .popup-reddit-url {
     width: 80%;
     color: var(--popup-reddit-url);
     font-weight: 600;
@@ -605,7 +605,8 @@ aside {
 
 /* Feeds */
 
-#feeds {
+#feeds,
+.prefs-group details {
     position: relative;
     border-radius: 5px;
     border: var(--panel-border);
@@ -616,11 +617,13 @@ aside {
     display: inline-block;
 }
 
-#feeds > summary {
+#feeds > summary,
+.prefs-group details > summary {
     padding: 8px 15px;
 }
 
-#feed_list {
+#feed_list,
+.prefs-group details > .helper {
     position: absolute;
     display: flex;
     min-width: 100%;
@@ -684,6 +687,7 @@ aside {
 
 select,
 #search,
+.commentQuery,
 #sort_options,
 #listing_options,
 #inside,
@@ -708,7 +712,8 @@ select {
 #searchbox > * { font-size: 15px; }
 
 select,
-#search {
+#search,
+.commentQuery {
     border: none;
     padding: 0 10px;
 
@@ -735,13 +740,13 @@ select,
     background: var(--highlighted);
 }
 
-#search {
+#search,
+.commentQuery {
     border-right: 2px var(--outside) solid;
     flex-grow: 1;
 }
 @media screen and (max-width: 800px) {
     #search { width: 0; }
-    #search.commentQuery { width: unset; }
 }
 
 #inside {
@@ -824,6 +829,7 @@ button.submit:hover > svg {
 }
 
 #sort,
+#commentSearchForm,
 #search_sort {
     display: flex;
     align-items: stretch;
@@ -1708,11 +1714,12 @@ summary.comment_data {
     margin: 0 0 5px;
 }
 
-.prefs legend {
+.prefs legend,
+.prefs h2 {
     font-weight: 500;
     border-bottom: 1px solid var(--highlighted);
     font-size: 18px;
-    padding-bottom: 10px;
+    padding: 0 2px 10px; /* the 2px sides are a legend's default, which a heading lacks */
     margin-bottom: 7px;
     width: 100%;
     float: left; /* places the legend inside the (invisible) border, instead of vertically centered on top border*/

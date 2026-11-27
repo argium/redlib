@@ -132,7 +132,7 @@
 	<script src="/playHLSVideo.js?v={{ crate::assets::version("playHLSVideo.js") }}" defer></script>
 	{% else %}
 	<div class="post_media_content">
-		<video class="post_media_video" src="{{ post.media.url }}" controls {% if prefs.autoplay_videos == "on" %}autoplay{% endif %} loop><a href={{ post.media.url }}>Video</a></video>
+		<video class="post_media_video" src="{{ post.media.url }}" controls {% if prefs.autoplay_videos == "on" %}autoplay{% endif %} loop><a href="{{ post.media.url }}">Video</a></video>
 	</div>
 	{% call render_hls_notification(post.permalink[1..]) %}
 	{% endif %}
@@ -204,7 +204,7 @@
 <li>
 	<a
 		{% if prefs.disable_visit_reddit_confirmation != "on" %}
-		href="#popup"
+		href="#popup-post"
 		{% else %}
 		href="https://reddit.com{{ permalink }}"
 		rel="nofollow"
@@ -212,7 +212,7 @@
 	>reddit</a>
 
 	{% if prefs.disable_visit_reddit_confirmation != "on" %}
-		{% call visit_reddit_confirmation(permalink) %}
+		{% call visit_reddit_confirmation(permalink, "popup-post") %}
 	{% endif %}
 </li>
 {% endmacro %}
@@ -286,7 +286,7 @@
 	</div>
 	{% else %}
 	<div class="post_media_content">
-		<video class="post_media_video short" src="{{ post.media.url }}" {% if post.media.width > 0 && post.media.height > 0 %}width="{{ post.media.width }}" height="{{ post.media.height }}"{% endif %} poster="{{ post.media.poster }}" preload="none" controls {% if prefs.autoplay_videos == "on" %}autoplay{% endif %}><a href={{ post.media.url }}>Video</a></video>
+		<video class="post_media_video short" src="{{ post.media.url }}" {% if post.media.width > 0 && post.media.height > 0 %}width="{{ post.media.width }}" height="{{ post.media.height }}"{% endif %} poster="{{ post.media.poster }}" preload="none" controls {% if prefs.autoplay_videos == "on" %}autoplay{% endif %}><a href="{{ post.media.url }}">Video</a></video>
 	</div>
 	{% call render_hls_notification(format!("{}#{}", &self.url[1..], post.id)) %}
 	{% endif %}
@@ -329,12 +329,12 @@
 </div>
 {%- endmacro %}
 
-{% macro visit_reddit_confirmation(url) -%}
-<div class="popup" id="popup">
+{% macro visit_reddit_confirmation(url, id) -%}
+<div class="popup" id="{{ id }}">
 	<div class="popup-inner">
 		<h2>You are about to leave Redlib</h2>
 		<p>Do you want to continue?</p>
-		<p id="reddit_url">https://www.reddit.com{{ url }}</p>
+		<p class="popup-reddit-url">https://www.reddit.com{{ url }}</p>
 		<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 639.24 563">
 			<defs>
 				<style>.cls-1{fill:#000000;}.cls-2{fill:#f8aa00;}</style>
@@ -345,8 +345,8 @@
 			<path class="cls-1" d="M356.1,201.67c-4.36,49.69-9.31,100.91-13.76,150.91-1.07,12.45-11.84,22.56-24.96,21.58-12.79-.95-22.14-9.63-23.31-22.76-3.43-51.52-11.9-103-12.63-154.49,6.33-47.53,74.51-42.03,74.66,4.76Z"/>
 			<path class="cls-1" d="M319.54,473.08c-46.34,2.64-53.75-72.47-.31-75.47,49.56,.78,49.1,76.24,.31,75.47Z"/>
 		</svg>
-		<a id="goback" href="#">No, go back!</a>
-		<a id="toreddit" href="https://www.reddit.com{{ url }}" rel="nofollow">Yes, take me to Reddit</a>
+		<a class="popup-goback" href="#">No, go back!</a>
+		<a class="popup-toreddit" href="https://www.reddit.com{{ url }}" rel="nofollow">Yes, take me to Reddit</a>
 	</div>
 </div>
 {%- endmacro %}

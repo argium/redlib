@@ -37,9 +37,9 @@
 	<meta property="og:video:type" content="video/mp4">
 	{% else %}
 	<meta property="og:type" content="website">
+	{% endif %}
 	{% if single_thread %}
 	<script src="/highlighted.js?v={{ crate::assets::version("highlighted.js") }}" defer></script>
-	{% endif %}
 	{% endif %}
 {% endblock %}
 
@@ -67,8 +67,8 @@
       </button>
       </form>
       <!-- SEARCH FORM -->
-      <form id="sort">
-        <input id="search" class="commentQuery" type="search" name="q" value="{{ comment_query }}" placeholder="Search comments" aria-label="Search comments">
+      <form id="commentSearchForm">
+        <input id="commentSearch" class="commentQuery" type="search" name="q" value="{{ comment_query }}" placeholder="Search comments" aria-label="Search comments">
         <input type="hidden" name="type" value="comment">
       </form>
       </div>

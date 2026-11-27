@@ -1787,6 +1787,11 @@ mod tests {
 	}
 
 	#[test]
+	fn html_markup_and_highlighted_error_page_has_valid_markup() {
+		crate::html_checks::assert_valid_markup("error", &error_page(Preferences::default()));
+	}
+
+	#[test]
 	fn a11y_markup_spoiler_spans_can_take_keyboard_focus() {
 		let body = rewrite_urls("<div class=\"md\"><p>before <span class=\"md-spoiler-text\">secret</span> <a href=\"/r/x\">link</a></p></div>");
 		assert!(body.contains("<span class=\"md-spoiler-text\" tabindex=\"0\">secret</span>"), "{body}");

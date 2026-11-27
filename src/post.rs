@@ -383,6 +383,40 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn html_markup_and_highlighted_post_pages_have_valid_markup() {
+		for (page, html) in post_pages().await {
+			crate::html_checks::assert_valid_markup(page, &html);
+		}
+	}
+
+	fn highlighted_script_count(html: &str) -> usize {
+		html.matches("/highlighted.js?v=").count()
+	}
+
+	#[tokio::test]
+	async fn html_markup_and_highlighted_script_loads_for_every_post_type_in_a_single_thread() {
+		use crate::test_support::post_of_type;
+		let comment = || parse_comments(&comment_listing(1), "/r/test/comments/link1/a_link/", "op", "", &HashSet::new(), &Preferences::default());
+		for post_type in ["image", "video", "gif", "gallery", "link", "self"] {
+			let thread = PostTemplate {
+				single_thread: true,
+				comments: comment(),
+				..post_template(post_of_type(post_type, "/img/a.jpg", "/thumb/b/a.jpg").await)
+			};
+			assert_eq!(highlighted_script_count(&thread.render().unwrap()), 1, "{post_type} thread");
+			let whole_post = PostTemplate {
+				comments: comment(),
+				..post_template(post_of_type(post_type, "/img/a.jpg", "/thumb/b/a.jpg").await)
+			};
+			assert_eq!(
+				highlighted_script_count(&whole_post.render().unwrap()),
+				0,
+				"{post_type} post without a single comment thread"
+			);
+		}
+	}
+
+	#[tokio::test]
 	async fn a11y_markup_post_pages_have_a_skip_link_main_and_one_h1() {
 		for (page, html) in post_pages().await {
 			crate::html_checks::assert_landmarks(page, &html);

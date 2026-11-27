@@ -161,12 +161,11 @@ body %}
                 </div>
                 {% if crate::utils::enable_rss() %}
                 <div id="user_rss">
-                    <a
-                        href="/u/{{ user.name }}.rss"
-                        title="RSS feed for u/{{ user.name }}"
-                    >
-                        <button class="subscribe">RSS feed</button>
-                    </a>
+                    <form action="/u/{{ user.name }}.rss">
+                        <button class="subscribe" title="RSS feed for u/{{ user.name }}">
+                            RSS feed
+                        </button>
+                    </form>
                 </div>
                 {% endif %}
             </div>

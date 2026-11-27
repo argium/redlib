@@ -235,6 +235,12 @@ mod tests {
 	}
 
 	#[test]
+	fn html_markup_and_highlighted_search_pages_have_valid_markup() {
+		crate::html_checks::assert_valid_markup("post results", &render_search("rust", ""));
+		crate::html_checks::assert_valid_markup("subreddit results", &render_search("rust", "sr_user"));
+	}
+
+	#[test]
 	fn a11y_markup_search_pages_have_a_skip_link_main_and_one_h1() {
 		crate::html_checks::assert_landmarks("post results", &render_search("rust", ""));
 		crate::html_checks::assert_landmarks("subreddit results", &render_search("rust", "sr_user"));

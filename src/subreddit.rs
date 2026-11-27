@@ -750,6 +750,10 @@ mod tests {
 	}
 
 	fn rendered_page_of(sub: Subreddit, posts: Vec<Post>, use_hls: &str, url: &str) -> String {
+		subreddit_template(sub, posts, use_hls, url).render().unwrap()
+	}
+
+	fn subreddit_template(sub: Subreddit, posts: Vec<Post>, use_hls: &str, url: &str) -> SubredditTemplate {
 		SubredditTemplate {
 			sub,
 			posts,
@@ -766,8 +770,6 @@ mod tests {
 			all_posts_hidden_nsfw: false,
 			no_posts: false,
 		}
-		.render()
-		.unwrap()
 	}
 
 	/// Listing pages: link, card-layout video and HLS posts, each with the sidebar on.
@@ -803,6 +805,33 @@ mod tests {
 			("wiki", wiki.render().unwrap()),
 			("wall", wall.render().unwrap()),
 		]
+	}
+
+	#[sealed_test(env = [("REDLIB_ENABLE_RSS", "on")])]
+	fn html_markup_and_highlighted_subreddit_rss_button_is_not_inside_a_link() {
+		let sub = Subreddit {
+			name: "rust".to_string(),
+			..Subreddit::default()
+		};
+		let post = tokio::runtime::Runtime::new().unwrap().block_on(post_fixture(false));
+		let html = SubredditTemplate {
+			sort: ("top".to_string(), "week".to_string()),
+			..subreddit_template(sub, vec![post], "off", "/r/rust")
+		}
+		.render()
+		.unwrap();
+
+		crate::html_checks::assert_valid_markup("subreddit with RSS", &html);
+		// The control is still there and still asks for the feed of the sort being viewed.
+		assert!(html.contains("<form action=\"/r/rust.rss\">"), "{html}");
+		assert!(html.contains("name=\"sort\" value=\"top\"") && html.contains("name=\"t\" value=\"week\""), "{html}");
+	}
+
+	#[tokio::test]
+	async fn html_markup_and_highlighted_listing_pages_have_valid_markup() {
+		for (page, html) in landmark_pages().await.into_iter().chain(listing_pages().await) {
+			crate::html_checks::assert_valid_markup(page, &html);
+		}
 	}
 
 	#[tokio::test]

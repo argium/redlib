@@ -317,6 +317,11 @@ mod tests {
 	}
 
 	#[test]
+	fn html_markup_and_highlighted_settings_page_has_valid_markup() {
+		crate::html_checks::assert_valid_markup("settings", &settings_page());
+	}
+
+	#[test]
 	fn a11y_markup_settings_page_has_a_skip_link_main_and_one_h1() {
 		crate::html_checks::assert_landmarks("settings", &settings_page());
 	}

@@ -221,6 +221,20 @@ mod tests {
 		.unwrap()
 	}
 
+	#[sealed_test(env = [("REDLIB_ENABLE_RSS", "on")])]
+	fn html_markup_and_highlighted_profile_rss_button_is_not_inside_a_link() {
+		let html = tokio::runtime::Runtime::new().unwrap().block_on(rendered_profile("off", false));
+
+		crate::html_checks::assert_valid_markup("profile with RSS", &html);
+		assert!(html.contains("<form action=\"/u/") && html.contains(".rss\">"), "the RSS control is still rendered: {html}");
+	}
+
+	#[tokio::test]
+	async fn html_markup_and_highlighted_profile_pages_have_valid_markup() {
+		crate::html_checks::assert_valid_markup("profile with a link post", &rendered_profile("off", false).await);
+		crate::html_checks::assert_valid_markup("profile with an HLS post", &rendered_profile("on", true).await);
+	}
+
 	#[tokio::test]
 	async fn a11y_markup_profile_page_has_a_skip_link_main_and_one_h1() {
 		crate::html_checks::assert_landmarks("profile", &rendered_profile("off", false).await);
