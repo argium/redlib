@@ -9,7 +9,6 @@ use hyper::{Body, Request, Response};
 use libflate::deflate::{Decoder, Encoder};
 use log::error;
 use regex::Regex;
-use revision::revisioned;
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
@@ -632,55 +631,39 @@ pub struct Params {
 	pub before: Option<String>,
 }
 
+/// Every export starts with this and a version byte, so a later change to `Preferences` can still read
+/// exports saved by older releases: bump [`EXPORT_VERSION`] and decode the old layout into its own struct.
+/// Exports from before versioning are bare bincode, which starts with the 8-byte length of `theme`. Its
+/// second byte is always zero, so it can never start with this header.
+const EXPORT_MAGIC: &[u8] = b"RLP";
+const EXPORT_VERSION: u8 = 2;
+
 #[derive(Default, Serialize, Deserialize, Debug, PartialEq, Eq)]
-#[revisioned(revision = 1)]
 pub struct Preferences {
-	#[revision(start = 1)]
 	#[serde(skip_serializing, skip_deserializing)]
 	pub available_themes: Vec<String>,
-	#[revision(start = 1)]
 	pub theme: String,
-	#[revision(start = 1)]
 	pub front_page: String,
-	#[revision(start = 1)]
 	pub layout: String,
-	#[revision(start = 1)]
 	pub wide: String,
-	#[revision(start = 1)]
 	pub blur_spoiler: String,
-	#[revision(start = 1)]
 	pub show_nsfw: String,
-	#[revision(start = 1)]
 	pub blur_nsfw: String,
-	#[revision(start = 1)]
 	pub hide_hls_notification: String,
-	#[revision(start = 1)]
 	pub video_quality: String,
-	#[revision(start = 1)]
 	pub hide_sidebar_and_summary: String,
-	#[revision(start = 1)]
 	pub use_hls: String,
-	#[revision(start = 1)]
 	pub autoplay_videos: String,
-	#[revision(start = 1)]
 	pub fixed_navbar: String,
-	#[revision(start = 1)]
 	pub disable_visit_reddit_confirmation: String,
-	#[revision(start = 1)]
 	pub comment_sort: String,
-	#[revision(start = 1)]
 	pub post_sort: String,
-	#[revision(start = 1)]
 	#[serde(serialize_with = "serialize_vec_with_plus", deserialize_with = "deserialize_vec_with_plus")]
 	pub subscriptions: Vec<String>,
-	#[revision(start = 1)]
 	#[serde(serialize_with = "serialize_vec_with_plus", deserialize_with = "deserialize_vec_with_plus")]
 	pub filters: Vec<String>,
-	#[revision(start = 1)]
 	pub hide_awards: String,
-	#[revision(start = 1)]
 	pub hide_score: String,
-	#[revision(start = 1)]
 	pub remove_default_feeds: String,
 }
 
@@ -747,14 +730,25 @@ impl Preferences {
 		serde_urlencoded::to_string(self).map_err(|e| e.to_string())
 	}
 
-	pub fn to_bincode(&self) -> Result<Vec<u8>, String> {
-		bincode::serialize(self).map_err(|e| e.to_string())
+	/// The string behind the settings page's export box: deflated, then base2048 encoded.
+	pub fn to_export_string(&self) -> Result<String, String> {
+		let mut payload = [EXPORT_MAGIC, &[EXPORT_VERSION]].concat();
+		bincode::serialize_into(&mut payload, self).map_err(|e| e.to_string())?;
+		Ok(base2048::encode(&deflate_compress(payload)?))
 	}
-	pub fn to_compressed_bincode(&self) -> Result<Vec<u8>, String> {
-		deflate_compress(self.to_bincode()?)
-	}
-	pub fn to_bincode_str(&self) -> Result<String, String> {
-		Ok(base2048::encode(&self.to_compressed_bincode()?))
+
+	/// Reads a string made by [`Preferences::to_export_string`], or by a release from before exports
+	/// were versioned. The input is untrusted: it fails rather than inflating past `max_decompressed_bytes`.
+	pub fn from_export_string(encoded: &str, max_decompressed_bytes: u64) -> Result<Self, String> {
+		let compressed = base2048::decode(encoded).ok_or_else(|| "Failed to decode base2048 encoded preferences".to_string())?;
+		let payload = deflate_decompress_limited(compressed, max_decompressed_bytes)?;
+		let body = match payload.strip_prefix(EXPORT_MAGIC) {
+			Some([EXPORT_VERSION, body @ ..]) => body,
+			Some([version, ..]) => return Err(format!("Unsupported preferences export version {version}")),
+			Some([]) => return Err("Preferences export is truncated".to_string()),
+			None => &payload,
+		};
+		bincode::deserialize(body).map_err(|e| format!("Failed to deserialize bytes into Preferences struct: {e}"))
 	}
 }
 
@@ -2064,48 +2058,65 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 		assert_eq!(prefs, deserialized);
 	}
 
-	#[test]
-	fn test_default_prefs_serialization_loop_bincode() {
-		let prefs = Preferences::default();
-		test_round_trip(&prefs, false);
-		test_round_trip(&prefs, true);
-	}
-
 	static KNOWN_GOOD_CONFIGS: &[&str] = &[
 		"ఴӅβØØҞÉဏႢձĬ༧ȒʯऌԔӵ୮༏",
 		"ਧՊΥÀÃǎƱГ۸ඣമĖฤ႙ʟาúໜϾௐɥঀĜໃહཞઠѫҲɂఙ࿔ǲઉƲӟӻĻฅΜδ໖ԜǗဖငƦơ৶Ą௩ԹʛใЛʃශаΏ",
 		"ਧԩΥÀÃÎŠ౭൩ඔႠϼҭöҪƸռઇԾॐნɔາǒՍҰच௨ಖມŃЉŐདƦ๙ϩএఠȝഽйʮჯඒϰळՋ௮ສ৵ऎΦѧਹಧଟƙŃ३î༦ŌပղयƟแҜ།",
 	];
 
-	#[test]
-	fn test_known_good_configs_deserialization() {
-		for config in KNOWN_GOOD_CONFIGS {
-			let bytes = base2048::decode(config).unwrap();
-			let decompressed = deflate_decompress_limited(bytes, TEST_DECOMPRESSED_LIMIT).unwrap();
-			assert!(bincode::deserialize::<Preferences>(&decompressed).is_ok());
+	/// The decompressed payload behind an export string.
+	fn export_payload(encoded: &str) -> Vec<u8> {
+		deflate_decompress_limited(base2048::decode(encoded).unwrap(), TEST_DECOMPRESSED_LIMIT).unwrap()
+	}
+
+	fn export_string_of(payload: &[u8]) -> String {
+		base2048::encode(&deflate_compress(payload.to_vec()).unwrap())
+	}
+
+	fn customised_preferences() -> Preferences {
+		Preferences {
+			theme: "dark".to_string(),
+			autoplay_videos: "on".to_string(),
+			subscriptions: vec!["rust".to_string(), "news".to_string()],
+			filters: vec!["spam".to_string()],
+			..Preferences::default()
 		}
 	}
 
 	#[test]
-	fn test_known_good_configs_full_round_trip() {
+	fn flair_gallery_and_prefs_versioning_prefs_export_round_trips_with_a_version_header() {
+		let prefs = customised_preferences();
+		let encoded = prefs.to_export_string().unwrap();
+		assert!(export_payload(&encoded).starts_with(b"RLP\x02"), "an export names its version");
+		assert_eq!(Preferences::from_export_string(&encoded, TEST_DECOMPRESSED_LIMIT).unwrap(), prefs);
+	}
+
+	#[test]
+	fn flair_gallery_and_prefs_versioning_prefs_known_good_v1_exports_still_decode() {
 		for config in KNOWN_GOOD_CONFIGS {
-			let bytes = base2048::decode(config).unwrap();
-			let decompressed = deflate_decompress_limited(bytes, TEST_DECOMPRESSED_LIMIT).unwrap();
-			let prefs: Preferences = bincode::deserialize(&decompressed).unwrap();
-			test_round_trip(&prefs, false);
-			test_round_trip(&prefs, true);
+			let prefs = Preferences::from_export_string(config, TEST_DECOMPRESSED_LIMIT).unwrap();
+			let exported_again = prefs.to_export_string().unwrap();
+			assert_eq!(Preferences::from_export_string(&exported_again, TEST_DECOMPRESSED_LIMIT).unwrap(), prefs);
 		}
 	}
 
-	fn test_round_trip(input: &Preferences, compression: bool) {
-		let serialized = bincode::serialize(input).unwrap();
-		let compressed = if compression { deflate_compress(serialized).unwrap() } else { serialized };
-		let decompressed = if compression {
-			deflate_decompress_limited(compressed, TEST_DECOMPRESSED_LIMIT).unwrap()
-		} else {
-			compressed
-		};
-		let deserialized: Preferences = bincode::deserialize(&decompressed).unwrap();
-		assert_eq!(*input, deserialized);
+	#[test]
+	fn flair_gallery_and_prefs_versioning_prefs_malformed_exports_are_errors() {
+		let valid = export_payload(&customised_preferences().to_export_string().unwrap());
+		let malformed: [(&str, Vec<u8>); 4] = [
+			("empty", Vec::new()),
+			("header only", b"RLP\x02".to_vec()),
+			("truncated", valid[..valid.len() / 2].to_vec()),
+			// A claimed string length of 2^60 must be refused, not allocated.
+			("huge length", [b"RLP\x02".as_slice(), &(1u64 << 60).to_le_bytes()].concat()),
+		];
+		for (what, payload) in malformed {
+			assert!(Preferences::from_export_string(&export_string_of(&payload), TEST_DECOMPRESSED_LIMIT).is_err(), "{what}");
+		}
+		assert!(Preferences::from_export_string("not an export", TEST_DECOMPRESSED_LIMIT).is_err());
+
+		let future = [b"RLP\x63".as_slice(), &valid[4..]].concat();
+		let error = Preferences::from_export_string(&export_string_of(&future), TEST_DECOMPRESSED_LIMIT).unwrap_err();
+		assert!(error.contains("version 99"), "{error}");
 	}
 }

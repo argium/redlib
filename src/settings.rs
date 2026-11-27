@@ -5,7 +5,7 @@ use std::collections::HashMap;
 // CRATES
 use crate::server::ResponseExt;
 use crate::subreddit::join_until_size_limit;
-use crate::utils::{deflate_decompress_limited, read_body_limited, redirect, template, Preferences};
+use crate::utils::{read_body_limited, redirect, template, Preferences};
 use askama::Template;
 use cookie::Cookie;
 use hyper::{Body, Request, Response};
@@ -275,13 +275,7 @@ pub async fn encoded_restore(req: Request<Body>) -> Result<Response<Body>, Strin
 		.map(|(_, value)| value)
 		.ok_or_else(|| "encoded_prefs parameter not found in request body".to_string())?;
 
-	let bytes = base2048::decode(&encoded_prefs).ok_or_else(|| "Failed to decode base2048 encoded preferences".to_string())?;
-
-	let out = deflate_decompress_limited(bytes, ENCODED_RESTORE_MAX_DECOMPRESSED_BYTES)?;
-
-	let mut prefs: Preferences = bincode::deserialize(&out).map_err(|e| format!("Failed to deserialize bytes into Preferences struct: {e}"))?;
-
-	prefs.available_themes = vec![];
+	let prefs = Preferences::from_export_string(&encoded_prefs, ENCODED_RESTORE_MAX_DECOMPRESSED_BYTES)?;
 
 	let url = format!("/settings/restore/?{}", prefs.to_urlencoded()?);
 
@@ -356,8 +350,23 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn flair_gallery_and_prefs_versioning_prefs_encoded_restore_accepts_v1_and_current_exports() {
+		let prefs = Preferences {
+			theme: "dark".to_string(),
+			..Preferences::default()
+		};
+		// Before versioning, an export was the deflated bincode of the preferences, as written here.
+		let v1_export = base2048::encode(&crate::utils::deflate_compress(bincode::serialize(&prefs).unwrap()).unwrap());
+		for encoded in [v1_export, prefs.to_export_string().unwrap()] {
+			let response = encoded_restore(encoded_prefs_request(&encoded)).await.unwrap();
+			let location = response.headers()["Location"].to_str().unwrap();
+			assert!(location.starts_with("/settings/restore/?") && location.contains("theme=dark"), "{location}");
+		}
+	}
+
+	#[tokio::test]
 	async fn dos_and_shortlink_limits_encoded_restore_round_trips_preferences() {
-		let encoded = Preferences::default().to_bincode_str().unwrap();
+		let encoded = Preferences::default().to_export_string().unwrap();
 		let response = encoded_restore(encoded_prefs_request(&encoded)).await.unwrap();
 		assert!(response.headers()["Location"].to_str().unwrap().starts_with("/settings/restore/?"));
 	}
