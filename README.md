@@ -380,6 +380,8 @@ REDLIB_DEFAULT_WIDE = "on"
 REDLIB_DEFAULT_USE_HLS = "on"
 ```
 
+Redlib stops with a non-zero exit status if `redlib.toml` exists but cannot be read or parsed, rather than starting with the wrong settings.
+
 > [!NOTE]
 > If you're deploying Redlib using the **Docker CLI or Docker Compose**, environment variables can be defined in a [`.env` file](https://docs.docker.com/compose/environment-variables/set-environment-variables/), allowing you to centralize and manage configuration in one place.
 >
@@ -403,6 +405,7 @@ Redlib supports the following command line flags:
 - `-a`, `--address <ADDRESS>`: Sets address to listen on. Default is `[::]` (`0.0.0.0` with `-4`).
 - `-p`, `--port <PORT>`: Port to listen on. Default is `8080`.
 - `-H`, `--hsts <EXPIRE_TIME>`: HSTS header to tell browsers that this site should only be accessed over HTTPS. Default is `604800`.
+- `--healthcheck`: Ask the Redlib already running on `--address`/`--port` whether it is healthy, then exit. It prints `ok` and exits `0` when `GET /healthz` answers `200`, which needs a valid Reddit OAuth token. Otherwise it prints the reason to stderr and exits `1`. The container images use it as their `HEALTHCHECK`, so they need no `curl` or `wget`.
 
 ## Instance settings
 
