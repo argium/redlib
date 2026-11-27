@@ -734,9 +734,13 @@ mod tests {
 	}
 
 	async fn rendered_listing(use_hls: &str, hls_post: bool) -> String {
+		rendered_listing_of(vec![post_fixture(hls_post).await], use_hls)
+	}
+
+	fn rendered_listing_of(posts: Vec<Post>, use_hls: &str) -> String {
 		SubredditTemplate {
 			sub: Subreddit::default(),
-			posts: vec![post_fixture(hls_post).await],
+			posts,
 			sort: ("hot".to_string(), "".to_string()),
 			ends: (String::new(), String::new()),
 			prefs: Preferences {
@@ -763,6 +767,30 @@ mod tests {
 		assert!(with_hls.find(&hls) < with_hls.find(&player), "hls.min.js must come first so playHLSVideo.js can use Hls");
 		assert!(!rendered_listing("on", false).await.contains("hls.min.js"), "no HLS post, no hls.min.js");
 		assert!(!rendered_listing("off", true).await.contains("hls.min.js"), "use_hls off, no hls.min.js");
+	}
+
+	#[tokio::test]
+	async fn flair_gallery_and_prefs_versioning_links_listing_flair_search_encodes_the_flair() {
+		let html = rendered_listing_of(vec![crate::test_support::flaired_post().await], "off");
+		assert_eq!(crate::test_support::flair_search_links(&html), [crate::test_support::AWKWARD_FLAIR_SEARCH_LINK]);
+	}
+
+	async fn body_text(response: Response<Body>) -> String {
+		String::from_utf8(hyper::body::to_bytes(response.into_body()).await.unwrap().to_vec()).unwrap()
+	}
+
+	#[tokio::test]
+	async fn flair_gallery_and_prefs_versioning_links_wall_form_returns_to_the_full_url() {
+		let request = Request::get("/r/edgy?sort=new&t=week").body(Body::empty()).unwrap();
+		let wall = body_text(quarantine(&request, "edgy".to_string(), "quarantined")).await;
+
+		// Submitting the wall's form must send the visitor back to the page they asked for, query string included.
+		let action = wall.split("action=\"").nth(1).and_then(|rest| rest.split('"').next()).expect("the wall has a form");
+		let mut submit = Request::post(action).body(Body::empty()).unwrap();
+		let mut params = Params::new();
+		params.insert("sub".to_string(), "edgy".to_string());
+		submit.set_params(params);
+		assert_eq!(add_quarantine_exception(submit).await.unwrap().headers()["Location"], "/r/edgy?sort=new&t=week", "{action}");
 	}
 
 	#[test]

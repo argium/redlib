@@ -61,6 +61,35 @@ where
 		.expect("the handler must answer without asking Reddit")
 }
 
+/// Flair text that breaks an unencoded link: `#` starts a fragment, `&` a new parameter, `%` an escape.
+pub const AWKWARD_FLAIR: &str = "C# & 100%";
+
+/// The `search` link a post with [`AWKWARD_FLAIR`] must carry.
+pub const AWKWARD_FLAIR_SEARCH_LINK: &str = "/r/test/search?q=flair_name%3A%22C%23%20%26%20100%25%22&restrict_sr=on";
+
+/// The flair `search` links of a rendered page, as written in the `href`.
+pub fn flair_search_links(html: &str) -> Vec<&str> {
+	html
+		.split("href=\"")
+		.skip(1)
+		.filter_map(|rest| rest.split('"').next())
+		.filter(|href| href.contains("search?q=flair_name"))
+		.collect()
+}
+
+/// A post in r/test with [`AWKWARD_FLAIR`] as its text flair.
+pub async fn flaired_post() -> Post {
+	parse_post(&json!({ "data": {
+		"id": "f1",
+		"subreddit": "test",
+		"permalink": "/r/test/comments/f1/flair/",
+		"url": "https://example.com/",
+		"link_flair_type": "text",
+		"link_flair_text": AWKWARD_FLAIR,
+	} }))
+	.await
+}
+
 struct CapturingLogger(Mutex<Vec<(Level, String)>>);
 
 impl Log for CapturingLogger {

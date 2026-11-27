@@ -234,3 +234,32 @@ async fn parse_duplicates(json: &Value, filters: &HashSet<String>) -> (Vec<Post>
 	let (num_posts_filtered, all_posts_filtered) = filter_posts(&mut duplicates, filters);
 	(duplicates, num_posts_filtered, all_posts_filtered)
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::test_support::{flair_search_links, flaired_post, AWKWARD_FLAIR_SEARCH_LINK};
+
+	#[tokio::test]
+	async fn flair_gallery_and_prefs_versioning_links_duplicates_flair_search_encodes_the_flair() {
+		let mut original = flaired_post().await;
+		original.num_duplicates = 1;
+		let html = DuplicatesTemplate {
+			params: DuplicatesParams {
+				before: String::new(),
+				after: String::new(),
+				sort: String::new(),
+			},
+			post: original,
+			duplicates: vec![flaired_post().await],
+			prefs: Preferences::default(),
+			url: "/r/test/duplicates/f1".to_string(),
+			num_posts_filtered: 0,
+			all_posts_filtered: false,
+		}
+		.render()
+		.unwrap();
+		// Once on the original post and once on its duplicate.
+		assert_eq!(flair_search_links(&html), [AWKWARD_FLAIR_SEARCH_LINK; 2]);
+	}
+}

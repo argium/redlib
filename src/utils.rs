@@ -1621,9 +1621,10 @@ pub fn to_absolute_url(relative_path: &str) -> String {
 #[cfg(test)]
 mod tests {
 	use super::{
-		deflate_compress, deflate_decompress_limited, format_num, format_url, gating_metadata, html_page, read_body_limited, redirect, render_bullet_lists, rewrite_emotes,
-		rewrite_urls, should_be_nsfw_gated, url_path_basename, Post, Preferences,
+		deflate_compress, deflate_decompress_limited, format_num, format_url, gating_metadata, html_page, nsfw_landing, read_body_limited, redirect, render_bullet_lists,
+		rewrite_emotes, rewrite_urls, should_be_nsfw_gated, url_path_basename, Post, Preferences,
 	};
+	use crate::server::RequestExt;
 	use hyper::{Body, Request};
 	use sealed_test::prelude::*;
 
@@ -1674,6 +1675,26 @@ mod tests {
 		let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
 		let body = std::str::from_utf8(&body).unwrap();
 		assert_eq!(body, "Redirecting to <a href=\"&#x2F;&quot;&gt;&lt;script&gt;alert&#x28;1&#x29;&lt;&#x2F;script&gt;\">&#x2F;&quot;&gt;&lt;script&gt;alert&#x28;1&#x29;&lt;&#x2F;script&gt;</a>...", "fallback body must escape the attribute");
+	}
+
+	#[tokio::test]
+	async fn flair_gallery_and_prefs_versioning_links_nsfw_bypass_returns_to_the_full_url() {
+		let mut request = Request::get("/r/rust/comments/abc/post/?sort=new&t=week").body(Body::empty()).unwrap();
+		let mut params = route_recognizer::Params::new();
+		params.insert("id".to_string(), "abc".to_string());
+		request.set_params(params);
+		let landing = nsfw_landing(request, "/r/rust/comments/abc/post/?sort=new&t=week".to_string()).await.unwrap();
+		let html = String::from_utf8(hyper::body::to_bytes(landing.into_body()).await.unwrap().to_vec()).unwrap();
+
+		// Following the bypass link must send the visitor back to the page they asked for, query string included.
+		let link = html
+			.split("href=\"/settings/update/")
+			.nth(1)
+			.and_then(|rest| rest.split('"').next())
+			.expect("a post landing page offers the bypass link");
+		let bypass = Request::get(format!("/settings/update/{link}")).body(Body::empty()).unwrap();
+		let location = crate::settings::update(bypass).await.unwrap().headers()["Location"].to_str().unwrap().to_string();
+		assert_eq!(location, "/r/rust/comments/abc/post/?sort=new&t=week", "{link}");
 	}
 
 	async fn parsed_body(selftext: &str) -> String {

@@ -289,6 +289,23 @@ mod tests {
 		paragraph.split_once('>').expect("paragraph tag closes").1.trim().to_string()
 	}
 
+	#[tokio::test]
+	async fn flair_gallery_and_prefs_versioning_links_post_flair_search_encodes_the_flair() {
+		let html = PostTemplate {
+			comments: Vec::new(),
+			post: crate::test_support::flaired_post().await,
+			sort: String::new(),
+			prefs: Preferences::default(),
+			single_thread: false,
+			url: "/r/test/comments/f1/flair/".to_string(),
+			url_without_query: "/r/test/comments/f1/flair/".to_string(),
+			comment_query: String::new(),
+		}
+		.render()
+		.unwrap();
+		assert_eq!(crate::test_support::flair_search_links(&html), [crate::test_support::AWKWARD_FLAIR_SEARCH_LINK]);
+	}
+
 	/// A comment as Reddit sends it: the raw `body` text and its rendered `body_html`.
 	fn comment_with(id: &str, body: &str, body_html: &str) -> serde_json::Value {
 		json!({ "kind": "t1", "data": {
