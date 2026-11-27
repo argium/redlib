@@ -79,7 +79,6 @@ function startPlayer({ mp4 = MP4_URL, quality = 'best' } = {}) {
 		setTimeout: timers.setTimeout,
 		document: {
 			body: { dataset: { videoQuality: quality } },
-			getElementById: () => ({ getAttribute: () => quality }),
 			querySelectorAll: () => [source],
 			createElement: (tag) => fakeElement(tag),
 		},
@@ -157,4 +156,24 @@ test('another fatal error type gives up at once', () => {
 	hls.fail('otherError');
 
 	assert.deepEqual(hls.calls, ['destroy']);
+});
+
+test('the quality preference comes from the body', () => {
+	const { hls } = startPlayer({ quality: 'worst' });
+
+	hls.emit(FakeHls.Events.MANIFEST_PARSED);
+
+	assert.equal(hls.loadLevel, 0);
+});
+
+test('the quality selector has an accessible name and goes away when the player gives up', () => {
+	const { hls, container, timers } = startPlayer();
+	hls.emit(FakeHls.Events.MANIFEST_PARSED);
+	const selector = container.children.find((child) => child.tagName === 'select');
+
+	assert.equal(selector.attributes['aria-label'], 'Video quality');
+
+	hls.fail('otherError');
+	timers.run();
+	assert.equal(selector.removed, true);
 });

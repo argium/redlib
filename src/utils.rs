@@ -1737,6 +1737,55 @@ mod tests {
 	}
 
 	#[test]
+	fn template_a11y_and_html_error_and_info_pages_are_accessible() {
+		use askama::Template;
+		let error = super::ErrorTemplate {
+			msg: "Nothing here".to_string(),
+			prefs: Preferences::default(),
+			url: "/r/none".to_string(),
+		};
+		crate::html_checks::assert_accessible("error", &error.render().unwrap());
+		let info = super::InfoTemplate {
+			msg: "This instance is SFW-only".to_string(),
+			prefs: Preferences::default(),
+			url: "/r/none".to_string(),
+		};
+		crate::html_checks::assert_accessible("info", &info.render().unwrap());
+	}
+
+	fn error_page(prefs: Preferences) -> String {
+		use askama::Template;
+		super::ErrorTemplate {
+			msg: "Nothing here".to_string(),
+			prefs,
+			url: "/r/none".to_string(),
+		}
+		.render()
+		.unwrap()
+	}
+
+	#[test]
+	fn template_a11y_and_html_video_quality_travels_on_the_body() {
+		let prefs = Preferences {
+			video_quality: "worst".to_string(),
+			..Preferences::default()
+		};
+		let html = error_page(prefs);
+		let body_tag = &html[html.find("<body").unwrap()..];
+		assert!(body_tag[..body_tag.find('>').unwrap()].contains("data-video-quality=\"worst\""), "{body_tag}");
+	}
+
+	#[test]
+	fn template_a11y_and_html_nav_icons_name_themselves() {
+		let html = error_page(Preferences::default());
+		for link in ["reddit_link", "settings_link"] {
+			let anchor = &html[html.find(&format!("id=\"{link}\"")).unwrap()..];
+			let icon = &anchor[anchor.find("<svg").unwrap()..anchor.find("</svg>").unwrap()];
+			assert!(icon.contains("<title>"), "{link}: the icon is the link's only name once its text hides at 800 px");
+		}
+	}
+
+	#[test]
 	fn redirect_safety_rejects_offsite_targets() {
 		for target in [
 			"//evil.com",

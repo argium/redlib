@@ -268,6 +268,7 @@ fn build_comment(
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::utils::GalleryMedia;
 	use serde_json::json;
 
 	/// A comment listing as Reddit returns it: `count` sibling comments, each with one award.
@@ -300,7 +301,8 @@ mod tests {
 		paragraph.split_once('>').expect("paragraph tag closes").1.trim().to_string()
 	}
 
-	fn render_post(post: Post, single_thread: bool, base_url: &str) -> String {
+	/// A post page with no comments, default preferences and no known base URL.
+	fn post_template(post: Post) -> PostTemplate {
 		PostTemplate {
 			comments: Vec::new(),
 			url: post.permalink.clone(),
@@ -308,25 +310,96 @@ mod tests {
 			post,
 			sort: String::new(),
 			prefs: Preferences::default(),
-			single_thread,
+			single_thread: false,
 			comment_query: String::new(),
+			base_url: String::new(),
+		}
+	}
+
+	fn render_post(post: Post, base_url: &str) -> String {
+		PostTemplate {
 			base_url: base_url.to_string(),
+			..post_template(post)
 		}
 		.render()
 		.unwrap()
 	}
 
+	/// Every shape a post page takes: thread views over each media type, a gallery with captions,
+	/// and the HLS player.
+	async fn post_pages() -> Vec<(&'static str, String)> {
+		use crate::test_support::{post_fixture, post_of_type};
+		let comments = || parse_comments(&comment_listing(2), "/r/test/comments/link1/a_link/", "op", "", &HashSet::new(), &Preferences::default());
+		let gallery_item = |caption: &str, outbound_url: &str| GalleryMedia {
+			url: "/preview/pre/a.jpg".to_string(),
+			width: 100,
+			height: 100,
+			caption: caption.to_string(),
+			outbound_url: outbound_url.to_string(),
+		};
+		let mut gallery = post_of_type("gallery", "", "").await;
+		gallery.gallery = vec![gallery_item("A caption", "https://example.com/shop"), gallery_item("", "")];
+		let hls_prefs = Preferences {
+			use_hls: "on".to_string(),
+			..Preferences::default()
+		};
+
+		let thread = |post: Post| PostTemplate {
+			single_thread: true,
+			comments: comments(),
+			..post_template(post)
+		};
+		vec![
+			(
+				"link post with comments",
+				PostTemplate {
+					comments: comments(),
+					..post_template(post_fixture(false).await)
+				}
+				.render()
+				.unwrap(),
+			),
+			("image thread", thread(post_of_type("image", "/img/a.jpg", "/thumb/b/a.jpg").await).render().unwrap()),
+			("video thread", thread(post_of_type("video", "/vid/a/720.mp4", "").await).render().unwrap()),
+			(
+				"gallery",
+				PostTemplate {
+					comments: comments(),
+					..post_template(gallery)
+				}
+				.render()
+				.unwrap(),
+			),
+			(
+				"HLS video",
+				PostTemplate {
+					prefs: hls_prefs,
+					..post_template(post_fixture(true).await)
+				}
+				.render()
+				.unwrap(),
+			),
+		]
+	}
+
+	#[tokio::test]
+	async fn template_a11y_and_html_post_pages_are_accessible() {
+		for (page, html) in post_pages().await {
+			crate::html_checks::assert_accessible(page, &html);
+		}
+	}
+
 	#[tokio::test]
 	async fn opensearch_and_og_meta_urls_are_absolute_when_the_base_is_known() {
 		use crate::test_support::{meta_content, post_of_type};
-		let image = render_post(post_of_type("image", "/img/abc.jpg", "/thumb/b/xyz.jpg").await, false, "https://redlib.example");
+		let image = render_post(post_of_type("image", "/img/abc.jpg", "/thumb/b/xyz.jpg").await, "https://redlib.example");
 		assert_eq!(meta_content(&image, "og:image"), Some("https://redlib.example/thumb/b/xyz.jpg"));
 		assert_eq!(meta_content(&image, "twitter:image"), Some("https://redlib.example/thumb/b/xyz.jpg"));
 		assert_eq!(meta_content(&image, "og:url"), Some("https://redlib.example/r/test/comments/link1/a_link/"));
 		assert_eq!(meta_content(&image, "twitter:url"), Some("https://redlib.example/r/test/comments/link1/a_link/"));
 
 		for post_type in ["video", "gif"] {
-			let video = render_post(post_of_type(post_type, "/vid/abc/720.mp4", "").await, false, "https://redlib.example");
+			let video = render_post(post_of_type(post_type, "/vid/abc/720.mp4", "").await, "https://redlib.example");
 			assert_eq!(meta_content(&video, "og:video"), Some("https://redlib.example/vid/abc/720.mp4"), "{post_type}");
 		}
 	}
@@ -334,7 +407,7 @@ mod tests {
 	#[tokio::test]
 	async fn opensearch_and_og_meta_urls_stay_relative_without_a_base() {
 		use crate::test_support::{meta_content, post_of_type};
-		let image = render_post(post_of_type("image", "/img/abc.jpg", "/thumb/b/xyz.jpg").await, false, "");
+		let image = render_post(post_of_type("image", "/img/abc.jpg", "/thumb/b/xyz.jpg").await, "");
 		assert_eq!(meta_content(&image, "og:image"), Some("/thumb/b/xyz.jpg"));
 	}
 

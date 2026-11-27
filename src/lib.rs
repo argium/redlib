@@ -16,4 +16,6 @@ pub mod user;
 pub mod utils;
 
 #[cfg(test)]
+mod html_checks;
+#[cfg(test)]
 mod test_support;

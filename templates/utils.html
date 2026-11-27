@@ -16,14 +16,14 @@
 
 {% macro search(root, search) -%}
 <form action="{% if root != "/r/" && !root.is_empty() %}{{ root }}{% endif %}/search" id="searchbox">
-	<input id="search" type="text" name="q" placeholder="Search" title="Search redlib" value="{{ search }}">
+	<input id="search" type="text" name="q" placeholder="Search" title="Search redlib" aria-label="Search Redlib" value="{{ search }}">
 	{% if root != "/r/" && !root.is_empty() %}
 	<div id="inside">
 		<input type="checkbox" name="restrict_sr" id="restrict_sr" checked>
 		<label for="restrict_sr" class="search_label" title="Restrict search to this subreddit">in {{ root }}</label>
 	</div>
 	{% endif %}
-	<button class="submit">
+	<button class="submit" aria-label="Search">
 		<svg width="15" viewBox="0 0 110 100" fill="none" stroke-width="10" stroke-linecap="round">
 			<path d="M20 50 H100" />
 			<path d="M75 15 L100 50 L75 85" />
@@ -144,7 +144,7 @@
 			<figcaption>
 				<p>{{ image.caption }}</p>
 				{% if image.outbound_url.len() > 0 %}
-				<p><a class="outbound_url" href="{{ image.outbound_url }}" rel="nofollow">{{ image.outbound_url }}</a>
+				<p><a class="outbound_url" href="{{ image.outbound_url }}" rel="nofollow">{{ image.outbound_url }}</a></p>
 				{% endif %}
 			</figcaption>
 		</figure>

@@ -240,11 +240,10 @@ mod tests {
 	use super::*;
 	use crate::test_support::{flair_search_links, flaired_post, AWKWARD_FLAIR_SEARCH_LINK};
 
-	#[tokio::test]
-	async fn flair_gallery_and_prefs_versioning_links_duplicates_flair_search_encodes_the_flair() {
+	async fn duplicates_page() -> String {
 		let mut original = flaired_post().await;
 		original.num_duplicates = 1;
-		let html = DuplicatesTemplate {
+		DuplicatesTemplate {
 			params: DuplicatesParams {
 				before: String::new(),
 				after: String::new(),
@@ -258,8 +257,17 @@ mod tests {
 			all_posts_filtered: false,
 		}
 		.render()
-		.unwrap();
+		.unwrap()
+	}
+
+	#[tokio::test]
+	async fn flair_gallery_and_prefs_versioning_links_duplicates_flair_search_encodes_the_flair() {
 		// Once on the original post and once on its duplicate.
-		assert_eq!(flair_search_links(&html), [AWKWARD_FLAIR_SEARCH_LINK; 2]);
+		assert_eq!(flair_search_links(&duplicates_page().await), [AWKWARD_FLAIR_SEARCH_LINK; 2]);
+	}
+
+	#[tokio::test]
+	async fn template_a11y_and_html_duplicates_page_is_accessible() {
+		crate::html_checks::assert_accessible("duplicates", &duplicates_page().await);
 	}
 }

@@ -2,8 +2,7 @@
 (function () {
     // Fatal errors are recovered this many times per kind before the player gives up.
     const MAX_RECOVERIES = 3;
-    const configElement = document.getElementById('video_quality');
-    const qualitySetting = configElement.getAttribute('data-value');
+    const qualitySetting = document.body.dataset.videoQuality;
     if (Hls.isSupported()) {
         var videoSources = document.querySelectorAll("video source[type='application/vnd.apple.mpegurl']");
         videoSources.forEach(function (source) {
@@ -120,6 +119,7 @@
             function addQualitySelector(videoElement, hlsInstance, availableLevels) {
                 var qualitySelector = document.createElement('select');
                 qualitySelector.classList.add('quality-selector');
+                qualitySelector.setAttribute('aria-label', 'Video quality');
                 var defaultIndex = getIndexOfDefault(availableLevels.length);
                 availableLevels.forEach(function (level, index) {
                     var option = document.createElement('option');

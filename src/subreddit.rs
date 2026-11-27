@@ -765,6 +765,23 @@ mod tests {
 		.unwrap()
 	}
 
+	/// Listing pages: link, card-layout video and HLS posts, each with the sidebar on.
+	async fn listing_pages() -> Vec<(&'static str, String)> {
+		let video = crate::test_support::post_of_type("video", "/vid/a/720.mp4", "").await;
+		vec![
+			("link listing", rendered_page(vec![post_fixture(false).await], "off", "/r/test")),
+			("video listing", rendered_page(vec![video], "off", "/r/test")),
+			("HLS listing", rendered_page(vec![post_fixture(true).await], "on", "/r/test")),
+		]
+	}
+
+	#[tokio::test]
+	async fn template_a11y_and_html_listing_pages_are_accessible() {
+		for (page, html) in listing_pages().await {
+			crate::html_checks::assert_accessible(page, &html);
+		}
+	}
+
 	/// The `redirect=` value of every link or form in `html`, decoded the way the handlers decode it.
 	fn redirect_targets(html: &str) -> Vec<String> {
 		html

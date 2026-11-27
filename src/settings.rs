@@ -302,6 +302,36 @@ mod tests {
 		(Body::wrap_stream(stream), pulled)
 	}
 
+	fn settings_page() -> String {
+		SettingsTemplate {
+			prefs: Preferences {
+				available_themes: vec!["system".to_string(), "dark".to_string()],
+				subscriptions: vec!["rust".to_string(), "u_spez".to_string()],
+				filters: vec!["news".to_string()],
+				..Preferences::default()
+			},
+			url: "/settings".to_string(),
+		}
+		.render()
+		.unwrap()
+	}
+
+	#[test]
+	fn template_a11y_and_html_settings_page_is_accessible() {
+		crate::html_checks::assert_accessible("settings", &settings_page());
+	}
+
+	#[test]
+	fn template_a11y_and_html_settings_copy_result_is_announced_beside_the_button() {
+		let html = settings_page();
+		let button = html.find("id=\"copy\"").expect("the copy button");
+		let status = html.find("id=\"copy_status\" role=\"status\"").expect("a status region for the copy result");
+		assert!(
+			status > button && html[button..status].contains("</button>"),
+			"the status must sit outside and after the button"
+		);
+	}
+
 	fn encoded_prefs_request(encoded_prefs: &str) -> Request<Body> {
 		let body = form_urlencoded::Serializer::new(String::new()).append_pair("encoded_prefs", encoded_prefs).finish();
 		Request::post("/settings/encoded-restore").body(Body::from(body)).unwrap()

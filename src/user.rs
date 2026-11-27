@@ -222,6 +222,12 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn template_a11y_and_html_profile_pages_are_accessible() {
+		crate::html_checks::assert_accessible("profile with a link post", &rendered_profile("off", false).await);
+		crate::html_checks::assert_accessible("profile with an HLS post", &rendered_profile("on", true).await);
+	}
+
+	#[tokio::test]
 	async fn static_js_caching_user_loads_hls_only_for_hls_posts() {
 		let with_hls = rendered_profile("on", true).await;
 		let hls = format!("/hls.min.js?v={}\" defer", crate::assets::version("hls.min.js"));

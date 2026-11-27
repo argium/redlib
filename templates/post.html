@@ -55,10 +55,10 @@
        <div id="commentQueryForms">
 		<form id="sort">
 			<p id="comment_count">{{post.comments.0}} {% if post.comments.0 == "1" %}comment{% else %}comments{% endif %} <span id="sorted_by">sorted by </span></p>
-			<select name="sort" title="Sort comments by" id="commentSortSelect"> 
+			<select name="sort" title="Sort comments by" aria-label="Sort comments by" id="commentSortSelect"> 
 				{% call utils::options(sort, ["confidence", "top", "new", "controversial", "old"], "confidence") %}
       </select>
-        <button id="sort_submit" class="submit">
+        <button id="sort_submit" class="submit" aria-label="Apply sort">
           <svg width="15" viewBox="0 0 110 100" fill="none" stroke-width="10" stroke-linecap="round">
               <path d="M20 50 H100" />
               <path d="M75 15 L100 50 L75 85" />
@@ -68,7 +68,7 @@
       </form>
       <!-- SEARCH FORM -->
       <form id="sort">
-        <input id="search" class="commentQuery" type="search" name="q" value="{{ comment_query }}" placeholder="Search comments">
+        <input id="search" class="commentQuery" type="search" name="q" value="{{ comment_query }}" placeholder="Search comments" aria-label="Search comments">
         <input type="hidden" name="type" value="comment">
       </form>
       </div>

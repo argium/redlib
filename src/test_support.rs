@@ -13,6 +13,7 @@ pub async fn post_fixture(hls: bool) -> Post {
 	let data = if hls {
 		json!({
 			"id": "vid1",
+			"title": "A video",
 			"subreddit": "test",
 			"permalink": "/r/test/comments/vid1/a_video/",
 			"secure_media": { "reddit_video": {
@@ -21,7 +22,7 @@ pub async fn post_fixture(hls: bool) -> Post {
 			} },
 		})
 	} else {
-		json!({ "id": "link1", "subreddit": "test", "permalink": "/r/test/comments/link1/a_link/", "url": "https://example.com/" })
+		json!({ "id": "link1", "title": "A link", "subreddit": "test", "permalink": "/r/test/comments/link1/a_link/", "url": "https://example.com/" })
 	};
 	parse_post(&json!({ "data": data })).await
 }
@@ -97,6 +98,7 @@ pub fn flair_search_links(html: &str) -> Vec<&str> {
 pub async fn flaired_post() -> Post {
 	parse_post(&json!({ "data": {
 		"id": "f1",
+		"title": "A flaired post",
 		"subreddit": "test",
 		"permalink": "/r/test/comments/f1/flair/",
 		"url": "https://example.com/",

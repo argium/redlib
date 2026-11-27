@@ -235,6 +235,13 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn template_a11y_and_html_search_pages_are_accessible() {
+		crate::html_checks::assert_accessible("post results", &render_search("rust", ""));
+		crate::html_checks::assert_accessible("subreddit results", &render_search("rust", "sr_user"));
+		crate::html_checks::assert_accessible("results with an HLS post", &rendered_results("on", true).await);
+	}
+
+	#[tokio::test]
 	async fn static_js_caching_search_loads_hls_only_for_hls_posts() {
 		let with_hls = rendered_results("on", true).await;
 		let hls = format!("/hls.min.js?v={}\" defer", crate::assets::version("hls.min.js"));
