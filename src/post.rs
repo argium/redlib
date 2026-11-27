@@ -446,6 +446,18 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn opensearch_and_og_meta_urls_escape_a_configured_base() {
+		use crate::test_support::post_of_type;
+		let html = render_post(post_of_type("image", "/img/abc.jpg", "/thumb/b/xyz.jpg").await, "https://libred.example/?a=1&b='2'\"<x>");
+
+		assert!(
+			!html.contains("&b='2'") && !html.contains("\"<x>") && !html.contains("<x>"),
+			"the base reached the page unescaped: {html}"
+		);
+		assert!(html.contains("&#38;b=&#39;2&#39;"), "{html}");
+	}
+
+	#[tokio::test]
 	async fn opensearch_and_og_meta_urls_stay_relative_without_a_base() {
 		use crate::test_support::{meta_content, post_of_type};
 		let image = render_post(post_of_type("image", "/img/abc.jpg", "/thumb/b/xyz.jpg").await, "");

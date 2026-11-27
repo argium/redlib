@@ -1628,27 +1628,65 @@ pub fn to_absolute_url(relative_path: &str) -> String {
 	format!("{}{}", config::get_setting("REDLIB_FULL_URL").unwrap_or_default(), relative_path)
 }
 
+/// The instance's public URL from `REDLIB_FULL_URL` without a trailing slash, when it is set.
+pub fn configured_base_url() -> Option<String> {
+	get_setting("REDLIB_FULL_URL")
+		.filter(|url| !url.is_empty())
+		.map(|url| url.trim_end_matches('/').to_string())
+}
+
 /// The public base URL of this instance without a trailing slash, or `None` when it is unknown.
 ///
 /// `REDLIB_FULL_URL` wins. Otherwise the scheme comes from `X-Forwarded-Proto` (`https`, else
-/// `http`) and the host from the request, which is accepted only when it parses as a plain
-/// `host[:port]`: the value ends up in XML and HTML.
+/// `http`) and the host from the `Host` header (see [`normalise_host`]). `X-Forwarded-Host` and
+/// `Forwarded` are ignored on purpose: a proxy that rewrites `Host` needs `REDLIB_FULL_URL`.
 pub fn request_base_url(req: &Request<Body>) -> Option<String> {
-	if let Some(full_url) = get_setting("REDLIB_FULL_URL").filter(|url| !url.is_empty()) {
-		return Some(full_url.trim_end_matches('/').to_string());
+	if let Some(full_url) = configured_base_url() {
+		return Some(full_url);
 	}
 
 	let host = match req.headers().get(hyper::header::HOST) {
 		Some(value) => value.to_str().ok()?,
 		None => req.uri().authority()?.as_str(),
 	};
-	// `Authority` accepts `user@host`, which is not a host.
-	let authority = host.parse::<hyper::http::uri::Authority>().ok().filter(|_| !host.contains('@'))?;
 	let scheme = match req.headers().get("x-forwarded-proto").and_then(|proto| proto.to_str().ok()) {
 		Some("https") => "https",
 		_ => "http",
 	};
-	Some(format!("{scheme}://{authority}"))
+	Some(format!("{scheme}://{}", normalise_host(host)?))
+}
+
+/// Lower-cases `host` when it is a DNS name or IPv4 address (letters, digits, `.` and `-`, no
+/// empty label so no trailing dot, no label starting or ending with `-`) or a bracketed IPv6 literal, with an optional port of 1 to
+/// 65535. Anything else is `None`, because the result is written into XML and HTML.
+fn normalise_host(host: &str) -> Option<String> {
+	let (name, port) = if let Some(bracketed) = host.strip_prefix('[') {
+		let (literal, after) = bracketed.split_once(']')?;
+		literal.parse::<std::net::Ipv6Addr>().ok()?;
+		let port = if after.is_empty() { None } else { Some(after.strip_prefix(':')?) };
+		(format!("[{literal}]"), port)
+	} else {
+		let (name, port) = match host.split_once(':') {
+			Some((name, port)) => (name, Some(port)),
+			None => (host, None),
+		};
+		let is_dns_name = name
+			.split('.')
+			.all(|label| !label.is_empty() && !label.starts_with('-') && !label.ends_with('-') && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'));
+		if !is_dns_name {
+			return None;
+		}
+		(name.to_string(), port)
+	};
+
+	let name = name.to_ascii_lowercase();
+	match port {
+		None => Some(name),
+		Some(port) => {
+			let is_port = port.len() <= 5 && port.bytes().all(|b| b.is_ascii_digit()) && matches!(port.parse::<u16>(), Ok(1..));
+			is_port.then(|| format!("{name}:{port}"))
+		}
+	}
 }
 
 /// Prefixes a site path (`/img/..`) with `base_url`. Anything else (empty, protocol-relative or
@@ -1721,6 +1759,63 @@ mod tests {
 		for host in ["evil\"><x", "user@redlib.example", "a b", ""] {
 			assert_eq!(request_base_url(&request_with(&[("host", host)])), None, "{host:?}");
 		}
+	}
+
+	#[test]
+	fn opensearch_and_og_request_base_url_rejects_hosts_that_are_not_host_and_port() {
+		for host in [
+			"a:b",
+			"a:99999999",
+			"a:0",
+			"a:65536",
+			"redlib.example:",
+			"redlib.example:80:80",
+			"*",
+			"a,b",
+			"a'b&c;d",
+			"a!b",
+			"a=b",
+			"a+b$c()",
+			"redlib.example.",
+			".redlib.example",
+			"a..b",
+			"-",
+			"[::1",
+			"[zz::1]",
+			"[::1]x",
+			"[::1]:",
+			"[::1]:70000",
+			"[<x>]",
+			"%61.example",
+			"r\u{e9}dlib.example",
+		] {
+			assert_eq!(request_base_url(&request_with(&[("host", host)])), None, "{host:?}");
+		}
+	}
+
+	#[test]
+	fn opensearch_and_og_request_base_url_accepts_names_addresses_and_ports_in_lower_case() {
+		for (host, base_url) in [
+			("REDLIB.Example", "http://redlib.example"),
+			("my-redlib.example.org:65535", "http://my-redlib.example.org:65535"),
+			("localhost:1", "http://localhost:1"),
+			("192.168.0.2:8080", "http://192.168.0.2:8080"),
+			("[::1]", "http://[::1]"),
+			("[2001:DB8::1]:8080", "http://[2001:db8::1]:8080"),
+		] {
+			assert_eq!(request_base_url(&request_with(&[("host", host)])).as_deref(), Some(base_url), "{host:?}");
+		}
+	}
+
+	#[test]
+	fn opensearch_and_og_configured_urls_cannot_inject_markup_into_the_descriptor() {
+		use askama::Template;
+		let awkward = "https://libred.example/?a=1&b='2'\"<x>";
+		let descriptor = super::OpenSearchTemplate { base_url: awkward.to_string() }.render().unwrap();
+		for raw in ["&b=", "'2'", "\"<x>", "<x>"] {
+			assert!(!descriptor.contains(raw), "{raw} reached the XML unescaped: {descriptor}");
+		}
+		assert!(descriptor.contains("&#38;b=&#39;2&#39;"), "{descriptor}");
 	}
 
 	#[sealed_test(env = [("REDLIB_FULL_URL", "https://libred.example/")])]

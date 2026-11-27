@@ -9,7 +9,7 @@ const NETWORK_ERROR = 'networkError';
 const MEDIA_ERROR = 'mediaError';
 
 class FakeHls {
-	static Events = { MANIFEST_PARSED: 'manifestParsed', ERROR: 'error' };
+	static Events = { MANIFEST_PARSED: 'manifestParsed', FRAG_LOADED: 'fragLoaded', ERROR: 'error' };
 	static ErrorType = { NETWORK_ERROR, MEDIA_ERROR };
 	static isSupported() {
 		return true;
@@ -49,10 +49,22 @@ class FakeHls {
  * Runs `playHLSVideo.js` on a page with one HLS video, then plays it so the script creates its
  * `Hls` instance. `mp4` is the video's MP4 fallback `<source>`, or null when it has none.
  */
-function startPlayer({ mp4 = MP4_URL, quality = 'best' } = {}) {
+function startPlayer({ mp4 = MP4_URL, quality = 'best', play } = {}) {
 	const timers = fakeTimers();
 	const container = fakeElement('div');
-	const video = fakeElement('video', { src: '', plays: 0, loads: 0, play() { this.plays++; }, load() { this.loads++; }, querySelectorAll: () => [] });
+	const video = fakeElement('video', {
+		src: '',
+		plays: 0,
+		loads: 0,
+		play() {
+			this.plays++;
+			return play?.();
+		},
+		load() {
+			this.loads++;
+		},
+		querySelectorAll: () => [],
+	});
 	const originalVideo = fakeElement('video', {
 		canPlayType: () => '',
 		cloneNode: () => video,
@@ -176,4 +188,90 @@ test('the quality selector has an accessible name and goes away when the player 
 	hls.fail('otherError');
 	timers.run();
 	assert.equal(selector.removed, true);
+});
+
+test('a pending retry does not restart the stream once the player has given up', () => {
+	const { hls, timers } = startPlayer();
+
+	hls.fail(NETWORK_ERROR);
+	hls.fail('otherError');
+	timers.run();
+
+	assert.deepEqual(hls.calls, ['destroy']);
+});
+
+test('network and media errors each have their own budget of three', () => {
+	const { hls, timers } = startPlayer();
+
+	for (let attempt = 0; attempt < 3; attempt++) {
+		hls.fail(NETWORK_ERROR);
+		timers.run();
+	}
+	for (let attempt = 0; attempt < 3; attempt++) {
+		hls.fail(MEDIA_ERROR);
+	}
+
+	assert.deepEqual(hls.calls, [...Array(3).fill('startLoad'), ...Array(3).fill('recoverMediaError')]);
+
+	hls.fail(MEDIA_ERROR);
+	assert.deepEqual(hls.calls.slice(-1), ['destroy']);
+});
+
+test('errors after giving up change nothing', () => {
+	const { hls, container, timers } = startPlayer();
+	hls.fail('otherError');
+
+	hls.fail(NETWORK_ERROR);
+	hls.fail(MEDIA_ERROR);
+	hls.fail('otherError');
+	timers.run();
+
+	assert.deepEqual(hls.calls, ['destroy']);
+	assert.equal(container.children.filter((child) => child.classNames.has('hls_error')).length, 1);
+});
+
+test('non-fatal errors are ignored', () => {
+	const { hls, timers } = startPlayer();
+
+	hls.emit(FakeHls.Events.ERROR, { type: NETWORK_ERROR, fatal: false });
+	timers.run();
+
+	assert.deepEqual(hls.calls, []);
+});
+
+test('a loaded fragment restores the retry budget, so sporadic errors over a long video do not add up', () => {
+	const { hls, timers } = startPlayer();
+
+	for (let burst = 0; burst < 3; burst++) {
+		for (let attempt = 0; attempt < 3; attempt++) {
+			hls.fail(NETWORK_ERROR);
+			timers.run();
+			hls.fail(MEDIA_ERROR);
+		}
+		hls.emit(FakeHls.Events.FRAG_LOADED, {});
+	}
+
+	assert.equal(hls.count('destroy'), 0);
+	assert.equal(hls.count('startLoad'), 9);
+	assert.equal(hls.count('recoverMediaError'), 9);
+});
+
+test('errors with no fragment loaded in between still run out of budget', () => {
+	const { hls, timers } = startPlayer();
+
+	for (let attempt = 0; attempt < 4; attempt++) {
+		hls.fail(NETWORK_ERROR);
+		timers.run();
+	}
+
+	assert.equal(hls.count('destroy'), 1);
+});
+
+test('a blocked play() on the MP4 fallback is handled, not left as an unhandled rejection', () => {
+	let handlers = 0;
+	const { hls } = startPlayer({ play: () => ({ catch: () => handlers++ }) });
+
+	hls.fail('otherError');
+
+	assert.equal(handlers, 1);
 });

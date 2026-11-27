@@ -14,11 +14,15 @@ async function writeToClipboard(field) {
         await navigator.clipboard.writeText(field.value);
         return true;
     } catch {
+        // Selecting the field moves focus to it, so hand focus back afterwards.
+        const previouslyFocused = document.activeElement;
         field.select();
         try {
             return document.execCommand('copy');
         } catch {
             return false;
+        } finally {
+            previouslyFocused?.focus();
         }
     }
 }

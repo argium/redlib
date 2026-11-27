@@ -70,7 +70,11 @@
                         message.textContent = 'This video could not be loaded with audio. Playing it without audio instead.';
                         newVideo.src = mp4Url;
                         newVideo.load();
-                        newVideo.play();
+                        var played = newVideo.play();
+                        if (played) {
+                            // Autoplay can be blocked; the visitor can still press play.
+                            played.catch(function () {});
+                        }
                     } else {
                         message.textContent = 'This video could not be played.';
                     }
@@ -92,6 +96,13 @@
 
                     hls.startLoad();
                     newVideo.play();
+                });
+
+                // Errors count against the budget only until the stream loads again, so a few
+                // hiccups spread over a long video do not add up to giving up.
+                hls.on(Hls.Events.FRAG_LOADED, function () {
+                    recoveries.network = 0;
+                    recoveries.media = 0;
                 });
 
                 hls.on(Hls.Events.ERROR, function (event, data) {

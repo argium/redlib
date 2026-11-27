@@ -14,7 +14,7 @@ use hyper::{header::HeaderValue, Body, Request, Response};
 use log::{info, warn};
 use redlib::client::{canonical_path, proxy, rate_limit_check, CLIENT};
 use redlib::server::{self, RequestExt};
-use redlib::utils::{error, redirect, request_base_url, OpenSearchTemplate, ThemeAssets};
+use redlib::utils::{configured_base_url, error, redirect, request_base_url, OpenSearchTemplate, ThemeAssets};
 use redlib::{assets, config, duplicates, headers, health, instance_info, post, search, settings, subreddit, user};
 
 use redlib::client::OAUTH_CLIENT;
@@ -66,7 +66,8 @@ async fn font() -> Result<Response<Body>, String> {
 }
 
 /// Describes the search form with this instance's own URL. Without `REDLIB_FULL_URL` the URL comes
-/// from the `Host` header, so the answer depends on it and must be cached per host.
+/// from the request's `Host` and `X-Forwarded-Proto` headers, so only the requester's own browser
+/// may keep the answer; a shared cache could otherwise serve one visitor's headers to everyone.
 async fn opensearch(req: Request<Body>) -> Result<Response<Body>, String> {
 	let Some(base_url) = request_base_url(&req) else {
 		return Ok(
@@ -78,15 +79,13 @@ async fn opensearch(req: Request<Body>) -> Result<Response<Body>, String> {
 		);
 	};
 	let description = OpenSearchTemplate { base_url }.render().map_err(|e| e.to_string())?;
-	Ok(
-		Response::builder()
-			.status(200)
-			.header("content-type", "application/opensearchdescription+xml")
-			.header("Cache-Control", "public, max-age=1209600, s-maxage=86400")
-			.header("Vary", "Host")
-			.body(description.into())
-			.unwrap_or_default(),
-	)
+	let response = Response::builder().status(200).header("content-type", "application/opensearchdescription+xml");
+	let response = if configured_base_url().is_some() {
+		response.header("Cache-Control", "public, max-age=1209600, s-maxage=86400")
+	} else {
+		response.header("Cache-Control", "private, max-age=300").header("Vary", "Host, X-Forwarded-Proto")
+	};
+	Ok(response.body(description.into()).unwrap_or_default())
 }
 
 async fn resource(body: &str, content_type: &str, cache: bool) -> Result<Response<Body>, String> {
@@ -840,6 +839,32 @@ mod tests {
 		assert_eq!(status, 200, "{body}");
 		assert!(body.contains("template=\"https://libred.example/search\""), "{body}");
 		assert!(!body.contains("redlib.example"), "{body}");
+	}
+
+	fn header_values(response: &Response<Body>, name: &str) -> String {
+		response.headers().get_all(name).iter().map(|value| value.to_str().unwrap()).collect::<Vec<_>>().join(", ")
+	}
+
+	#[tokio::test]
+	async fn opensearch_and_og_descriptor_built_from_request_headers_is_not_shared_cacheable() {
+		let request = Request::get("/opensearch.xml").header("host", "redlib.example").body(Body::empty()).unwrap();
+		let response = opensearch(request).await.unwrap();
+
+		let cache_control = header_values(&response, "cache-control");
+		assert!(
+			cache_control.starts_with("private,") && !cache_control.contains("s-maxage") && !cache_control.contains("public"),
+			"{cache_control}"
+		);
+		let vary = header_values(&response, "vary").to_ascii_lowercase();
+		assert!(vary.contains("host") && vary.contains("x-forwarded-proto"), "{vary}");
+	}
+
+	#[sealed_test(env = [("REDLIB_FULL_URL", "https://libred.example")])]
+	fn opensearch_and_og_descriptor_from_the_configured_url_is_publicly_cacheable() {
+		let request = Request::get("/opensearch.xml").header("host", "redlib.example").body(Body::empty()).unwrap();
+		let response = tokio::runtime::Runtime::new().unwrap().block_on(opensearch(request)).unwrap();
+
+		assert_eq!(header_values(&response, "cache-control"), "public, max-age=1209600, s-maxage=86400");
 	}
 
 	#[tokio::test]
