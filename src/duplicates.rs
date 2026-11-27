@@ -267,6 +267,11 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn a11y_markup_duplicates_page_has_a_skip_link_main_and_one_h1() {
+		crate::html_checks::assert_landmarks("duplicates", &duplicates_page().await);
+	}
+
+	#[tokio::test]
 	async fn template_a11y_and_html_duplicates_page_is_accessible() {
 		crate::html_checks::assert_accessible("duplicates", &duplicates_page().await);
 	}

@@ -317,6 +317,11 @@ mod tests {
 	}
 
 	#[test]
+	fn a11y_markup_settings_page_has_a_skip_link_main_and_one_h1() {
+		crate::html_checks::assert_landmarks("settings", &settings_page());
+	}
+
+	#[test]
 	fn template_a11y_and_html_settings_page_is_accessible() {
 		crate::html_checks::assert_accessible("settings", &settings_page());
 	}

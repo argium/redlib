@@ -108,6 +108,30 @@
     outline: 2px solid var(--accent);
 }
 
+/* Hidden from sight, still read by screen readers; a skip link shows itself while it has focus. */
+.visually-hidden,
+.skip-link:not(:focus) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.skip-link {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    z-index: 3;
+    padding: 10px 15px;
+    border-radius: 5px;
+    background: var(--highlighted);
+    box-shadow: var(--shadow);
+}
+
 html,
 body,
 div,
@@ -285,7 +309,7 @@ figcaption {
     margin: 1rem;
 }
 
-.popup-inner h1 {
+.popup-inner h2 {
     color: var(--popup-text);
     margin: 1.5rem 1.5rem 1rem;
 }
@@ -773,6 +797,11 @@ button.submit:hover > svg {
     overflow: auto;
 }
 
+/* The form clips its children, so their focus rings are drawn inside them. */
+#search_sort :focus-visible {
+    outline-offset: -2px;
+}
+
 #search_sort > *,
 .search_widget_divider_box > *,
 .search_widget_divider_box #sort_options {
@@ -831,10 +860,6 @@ button.submit:hover > svg {
         border-bottom: 2px var(--outside) solid;
     }
 
-    #search:focus {
-        outline: 0;
-    }
-
     #search_sort > .search_widget_divider_box {
         flex-wrap: wrap;
     }
@@ -885,6 +910,17 @@ main > * > footer > a {
 #sort_options > a:not(.selected):hover,
 #listing_options > a:not(.selected):hover {
     background: var(--foreground);
+}
+
+/* The rows above clip anything outside them, so the focus ring is drawn inside the tab. */
+#sort_options > a:focus-visible,
+#listing_options > a:focus-visible {
+    outline-offset: -4px;
+}
+
+#sort_options > a.selected:focus-visible,
+#listing_options > a.selected:focus-visible {
+    outline-color: var(--foreground);
 }
 
 #search_subreddits {
@@ -1157,7 +1193,10 @@ a.search_subreddit:hover {
 .post_blurred .post_media_content:hover ~ .post_body,
 .post_blurred .post_media_content:has(~ .post_body:hover) *,
 .post_blurred .post_body:hover,
-.post_blurred .post_thumbnail:hover * {
+.post_blurred .post_thumbnail:hover *,
+.post_blurred:focus-within .post_media_content *,
+.post_blurred:focus-within .post_body,
+.post_blurred:focus-within .post_thumbnail * {
 	filter: none;
 }
 
@@ -1648,6 +1687,10 @@ summary.comment_data {
     opacity: 0.75;
 }
 
+#copy_status {
+    margin-left: 8px;
+}
+
 #settings_note a {
     color: var(--accent);
 }
@@ -1798,12 +1841,14 @@ input[type="submit"] {
     color: transparent;
 }
 
-.md-spoiler-text:hover {
+.md-spoiler-text:hover,
+.md-spoiler-text:focus-within {
     background: var(--foreground);
     color: var(--text);
 }
 
-.md-spoiler-text:hover a {
+.md-spoiler-text:hover a,
+.md-spoiler-text:focus-within a {
     background: var(--foreground);
     color: var(--accent);
 }
@@ -2133,6 +2178,12 @@ th {
     .popup-inner {
         max-width: 80%;
     }
+}
+
+.hls_error {
+    margin-top: 8px;
+    font-size: 14px;
+    opacity: 0.85;
 }
 
 .quality-selector {

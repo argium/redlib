@@ -16,7 +16,8 @@
 {% endblock %}
 
 {% block body %}
-	<main>
+	<main id="main-content">
+		<h1 class="visually-hidden">{% if sub.name.is_empty() %}Home{% else %}r/{{ sub.name }}{% endif %}</h1>
 		{% if !is_filtered %}
 		<div id="column_one">
 			<form id="sort">
@@ -95,7 +96,7 @@
 				{% endif %}
 				<div id="sub_meta">
 					<img loading="lazy" id="sub_icon" src="{{ sub.icon }}" alt="Icon for r/{{ sub.name }}">
-					<h1 id="sub_title">{{ sub.title }}</h1>
+					<h2 id="sub_title">{{ sub.title }}</h2>
 					<p id="sub_name">r/{{ sub.name }}</p>
 					<p id="sub_description">{{ sub.description }}</p>
 					<div id="sub_details">

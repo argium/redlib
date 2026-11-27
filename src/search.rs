@@ -234,6 +234,12 @@ mod tests {
 		.unwrap()
 	}
 
+	#[test]
+	fn a11y_markup_search_pages_have_a_skip_link_main_and_one_h1() {
+		crate::html_checks::assert_landmarks("post results", &render_search("rust", ""));
+		crate::html_checks::assert_landmarks("subreddit results", &render_search("rust", "sr_user"));
+	}
+
 	#[tokio::test]
 	async fn template_a11y_and_html_search_pages_are_accessible() {
 		crate::html_checks::assert_accessible("post results", &render_search("rust", ""));

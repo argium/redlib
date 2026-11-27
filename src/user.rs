@@ -222,6 +222,11 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn a11y_markup_profile_page_has_a_skip_link_main_and_one_h1() {
+		crate::html_checks::assert_landmarks("profile", &rendered_profile("off", false).await);
+	}
+
+	#[tokio::test]
 	async fn template_a11y_and_html_profile_pages_are_accessible() {
 		crate::html_checks::assert_accessible("profile with a link post", &rendered_profile("off", false).await);
 		crate::html_checks::assert_accessible("profile with an HLS post", &rendered_profile("on", true).await);

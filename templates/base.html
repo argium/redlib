@@ -34,6 +34,7 @@
 		{% if prefs.wide == "on" %} wide{% endif %}
 		{% if prefs.theme != "system" %} {{ prefs.theme }}{% endif %}
 		{% if prefs.fixed_navbar == "on" %} fixed_navbar{% endif %}">
+		<a class="skip-link" href="#main-content">Skip to content</a>
 		<!-- NAVIGATION BAR -->
 		<nav class="
 			{% if prefs.fixed_navbar == "on" %} fixed_navbar{% endif %}">
@@ -66,7 +67,7 @@
 		
 		<!-- MAIN CONTENT -->
 		{% block body %}
-		<main>
+		<main id="main-content">
 			{% block content %}
 			{% endblock %}
 		</main>

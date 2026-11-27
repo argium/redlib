@@ -1288,6 +1288,9 @@ pub fn rewrite_urls(input_text: &str) -> String {
 	// Remove (html-encoded) "\" from URLs.
 	text1 = text1.replace("%5C", "").replace("\\_", "_");
 
+	// A <span> is not focusable, so keyboard users could never reveal a spoiler.
+	text1 = text1.replace("<span class=\"md-spoiler-text\">", "<span class=\"md-spoiler-text\" tabindex=\"0\">");
+
 	// Rewrite external media previews to Redlib
 	loop {
 		if REDDIT_PREVIEW_REGEX.find(&text1).is_none() {
@@ -1765,6 +1768,32 @@ mod tests {
 	}
 
 	#[test]
+	fn a11y_markup_error_info_and_nsfw_pages_have_a_skip_link_main_and_one_h1() {
+		use askama::Template;
+		crate::html_checks::assert_landmarks("error", &error_page(Preferences::default()));
+		let info = super::InfoTemplate {
+			msg: "This instance is SFW-only".to_string(),
+			prefs: Preferences::default(),
+			url: "/r/none".to_string(),
+		};
+		crate::html_checks::assert_landmarks("info", &info.render().unwrap());
+		let landing = super::NSFWLandingTemplate {
+			res: "rust".to_string(),
+			res_type: super::ResourceType::Subreddit,
+			prefs: Preferences::default(),
+			url: "/r/rust".to_string(),
+		};
+		crate::html_checks::assert_landmarks("NSFW landing", &landing.render().unwrap());
+	}
+
+	#[test]
+	fn a11y_markup_spoiler_spans_can_take_keyboard_focus() {
+		let body = rewrite_urls("<div class=\"md\"><p>before <span class=\"md-spoiler-text\">secret</span> <a href=\"/r/x\">link</a></p></div>");
+		assert!(body.contains("<span class=\"md-spoiler-text\" tabindex=\"0\">secret</span>"), "{body}");
+		assert_eq!(body.matches("tabindex").count(), 1, "only spoilers become focusable: {body}");
+	}
+
+	#[test]
 	fn template_a11y_and_html_video_quality_travels_on_the_body() {
 		let prefs = Preferences {
 			video_quality: "worst".to_string(),
@@ -1855,8 +1884,8 @@ mod tests {
 			parsed_body(">!whole line spoiler!<\n\nmid-line >!hidden *bold* text!< and r/rust, /u/spez or u/ab_c.\n\n```\nr/rust >!not a spoiler!<\n```\n\n`u/inline >!code!<`")
 				.await;
 		assert!(body.starts_with("<div class=\"md\">"), "spoiler css needs a .md ancestor: {body}");
-		assert!(body.contains("<span class=\"md-spoiler-text\">whole line spoiler</span>"), "{body}");
-		assert!(body.contains("<span class=\"md-spoiler-text\">hidden <em>bold</em> text</span>"), "{body}");
+		assert!(body.contains("<span class=\"md-spoiler-text\" tabindex=\"0\">whole line spoiler</span>"), "{body}");
+		assert!(body.contains("<span class=\"md-spoiler-text\" tabindex=\"0\">hidden <em>bold</em> text</span>"), "{body}");
 		assert!(body.contains("<a href=\"/r/rust\">r/rust</a>"), "{body}");
 		assert!(body.contains("<a href=\"/u/spez\">/u/spez</a>"), "{body}");
 		assert!(body.contains("<a href=\"/u/ab_c\">u/ab_c</a>"), "{body}");

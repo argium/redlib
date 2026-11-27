@@ -383,6 +383,13 @@ mod tests {
 	}
 
 	#[tokio::test]
+	async fn a11y_markup_post_pages_have_a_skip_link_main_and_one_h1() {
+		for (page, html) in post_pages().await {
+			crate::html_checks::assert_landmarks(page, &html);
+		}
+	}
+
+	#[tokio::test]
 	async fn template_a11y_and_html_post_pages_are_accessible() {
 		for (page, html) in post_pages().await {
 			crate::html_checks::assert_accessible(page, &html);

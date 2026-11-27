@@ -9,6 +9,7 @@
 
 {% block content %}
 	<div id="column_one">
+		<h1 class="visually-hidden">Search results{% if params.q != "" %} for {{ params.q }}{% endif %}</h1>
 		<form id="search_sort">
 			<div class="search_widget_divider_box">
 				<input id="search" type="text" name="q" placeholder="Search" value="{{ params.q }}" title="Search redlib" aria-label="Search Redlib">

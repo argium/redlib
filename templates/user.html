@@ -3,7 +3,7 @@
 user.name.replace("u/", "") }} (u/{{ user.name }}) - Redlib{% endblock %} {%
 block subscriptions %} {% call utils::sub_list("") %} {% endblock %} {% block
 body %}
-<main>
+<main id="main-content">
     {% if !is_filtered %}
     <div id="column_one">
         <form id="sort">

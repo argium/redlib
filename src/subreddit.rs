@@ -742,11 +742,16 @@ mod tests {
 	}
 
 	fn rendered_page(posts: Vec<Post>, use_hls: &str, url: &str) -> String {
+		let sub = Subreddit {
+			name: "rust".to_string(),
+			..Subreddit::default()
+		};
+		rendered_page_of(sub, posts, use_hls, url)
+	}
+
+	fn rendered_page_of(sub: Subreddit, posts: Vec<Post>, use_hls: &str, url: &str) -> String {
 		SubredditTemplate {
-			sub: Subreddit {
-				name: "rust".to_string(),
-				..Subreddit::default()
-			},
+			sub,
 			posts,
 			sort: ("hot".to_string(), "".to_string()),
 			ends: (String::new(), String::new()),
@@ -773,6 +778,38 @@ mod tests {
 			("video listing", rendered_page(vec![video], "off", "/r/test")),
 			("HLS listing", rendered_page(vec![post_fixture(true).await], "on", "/r/test")),
 		]
+	}
+
+	/// Listing pages that cover every `<main>` shape: a subreddit with its sidebar, the home feed
+	/// (no sidebar), the wiki and the quarantine wall.
+	async fn landmark_pages() -> Vec<(&'static str, String)> {
+		let wiki = WikiTemplate {
+			sub: "rust".to_string(),
+			wiki: "<p>Wiki text</p>".to_string(),
+			page: "index".to_string(),
+			prefs: Preferences::default(),
+			url: "/r/rust/wiki/index".to_string(),
+		};
+		let wall = WallTemplate {
+			title: "r/edgy is quarantined".to_string(),
+			sub: "edgy".to_string(),
+			msg: "Please click the button below to continue to this subreddit.".to_string(),
+			prefs: Preferences::default(),
+			url: "/r/edgy".to_string(),
+		};
+		vec![
+			("subreddit", rendered_page(vec![post_fixture(false).await], "off", "/r/rust")),
+			("home feed", rendered_page_of(Subreddit::default(), vec![post_fixture(false).await], "off", "/")),
+			("wiki", wiki.render().unwrap()),
+			("wall", wall.render().unwrap()),
+		]
+	}
+
+	#[tokio::test]
+	async fn a11y_markup_subreddit_pages_have_a_skip_link_main_and_one_h1() {
+		for (page, html) in landmark_pages().await {
+			crate::html_checks::assert_landmarks(page, &html);
+		}
 	}
 
 	#[tokio::test]
