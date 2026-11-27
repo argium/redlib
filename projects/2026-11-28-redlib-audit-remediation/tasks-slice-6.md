@@ -422,3 +422,19 @@ Screenshots (default dark, `tokyoNight`, `libredditLight` listing at 1280 px; th
 - The 8 px hit area around the thread line is lost in forced-colours mode.
 - Per-theme contrast covers the text, muted, visited, accent and button pairs named in the plan; `--green` text (moderator names, "all comments") and `--nsfw` were not checked.
 - The plan's "CSS inspection confirms `rem` sizing, `max-width: 70ch`" is replaced by computed measurements; no test asserts on CSS text. The plan's "static CSS checks verify `prefers-reduced-motion`/`forced-colors` rules" is replaced by the Chromium emulation above.
+
+### Review
+
+A reviewer read `d6f75ac..29498e0`. Verified findings and their dispositions:
+
+| Finding | Disposition | Regression test / evidence |
+| --- | --- | --- |
+| The error page's "Try again" used the raw request target, so `//evil.com/x` (which the router collapses to the `/*` handler) rendered a protocol-relative off-site link | Fixed: the template passes the target through `sanitize_redirect_path`, which also covers the `/info/<bad extension>` error | `ux_templates_and_settings_feedback_retry_link_never_leaves_the_site`; red: `left: "//evil.com/x", right: "/"` |
+| `.wide .md { max-width: 70ch }` also capped code blocks, tables and images | Fixed: only `p`, `ul`, `ol`, `blockquote` and headings inside `.md` (and `p.comment_body`) are capped | Playwright at 1920 px wide mode, after adding a 300-character `pre`, a table, a list and `h2` to a post. Before: pre 656 px, table 646 px. After: p 656, ul 696 (includes list padding), h2 963 (larger font, still 70 ch), pre 1808, table 1730 (both scroll) |
+| `--muted` on `--highlighted` (`.comment_body_filtered`) was not checked | Fixed: the checker covers the pair; `dracula` 3.46:1, `midnightPurple` 4.43:1, `tokyoNight` 2.96:1 were fixed (`--muted` lightened; `tokyoNight` `--highlighted` darkened from `#3d4462` to `#2d3349`) | `theme_contrast_every_served_theme_is_readable_and_declares_its_color_scheme`; red: the three lines above |
+
+Known limits, accepted:
+
+- Stopping autoplay under reduced motion needs JavaScript. With scripts off, an `autoplay` video still starts.
+- On a phone, nesting past the fifth level shares one visual line; `role="group"` still carries the structure for assistive technology.
+- `collapse_thread.js` is tested against DOM fakes, plus the one Chromium click check above.
