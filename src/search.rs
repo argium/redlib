@@ -170,11 +170,18 @@ async fn search_subreddits(q: &str, typed: &str) -> Vec<Subreddit> {
 	let subreddit_search_path = format!("/subreddits/search.json?q={}&limit={limit}", q.replace(' ', "+"));
 
 	// Send a request to the url
-	json(subreddit_search_path, false).await.unwrap_or_default()["data"]["children"]
+	let listing = json(subreddit_search_path, false).await.unwrap_or_default();
+	subreddit_results(&listing, utils::sfw_only())
+}
+
+/// Reads the communities of a subreddit search listing. An SFW-only instance leaves out the NSFW ones.
+fn subreddit_results(listing: &serde_json::Value, sfw_only: bool) -> Vec<Subreddit> {
+	listing["data"]["children"]
 		.as_array()
 		.map(ToOwned::to_owned)
 		.unwrap_or_default()
 		.iter()
+		.filter(|subreddit| !(sfw_only && subreddit["data"]["over18"].as_bool().unwrap_or_default()))
 		.map(|subreddit| {
 			// For each subreddit from subreddit list
 			// Fetch subreddit icon either from the community_icon or icon_img value
@@ -189,4 +196,28 @@ async fn search_subreddits(q: &str, typed: &str) -> Vec<Subreddit> {
 			}
 		})
 		.collect::<Vec<Subreddit>>()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::subreddit_results;
+
+	fn listing() -> serde_json::Value {
+		serde_json::json!({ "data": { "children": [
+			{ "data": { "display_name": "family", "url": "/r/family/", "over18": false } },
+			{ "data": { "display_name": "adult", "url": "/r/adult/", "over18": true } },
+		] } })
+	}
+
+	#[test]
+	fn sfw_only_search_results_leave_out_nsfw_communities() {
+		let names: Vec<_> = subreddit_results(&listing(), true).into_iter().map(|s| s.name).collect();
+		assert_eq!(names, ["family"]);
+	}
+
+	#[test]
+	fn search_results_keep_nsfw_communities_when_the_instance_allows_them() {
+		let names: Vec<_> = subreddit_results(&listing(), false).into_iter().map(|s| s.name).collect();
+		assert_eq!(names, ["family", "adult"]);
+	}
 }

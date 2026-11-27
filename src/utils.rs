@@ -1661,7 +1661,16 @@ mod tests {
 
 	#[test]
 	fn redirect_safety_rejects_offsite_targets() {
-		for target in ["//evil.com", "/\\evil.com", "https://evil.com", "evil.com", "/ok\r\nSet-Cookie: x=1", "", "///evil.com"] {
+		for target in [
+			"//evil.com",
+			"/\\evil.com",
+			"https://evil.com",
+			"evil.com",
+			"/ok\r\nSet-Cookie: x=1",
+			"",
+			"///evil.com",
+			"/\t/evil.com",
+		] {
 			let response = redirect(target);
 			assert_eq!(response.headers()["Location"], "/", "{target:?} must not be followed");
 		}
@@ -1674,7 +1683,7 @@ mod tests {
 		let response = redirect("/\"><script>alert(1)</script>");
 		let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
 		let body = std::str::from_utf8(&body).unwrap();
-		assert!(!body.contains("<script>"), "fallback body must be escaped: {body}");
+		assert_eq!(body, "Redirecting to <a href=\"&#x2F;&quot;&gt;&lt;script&gt;alert&#x28;1&#x29;&lt;&#x2F;script&gt;\">&#x2F;&quot;&gt;&lt;script&gt;alert&#x28;1&#x29;&lt;&#x2F;script&gt;</a>...", "fallback body must escape the attribute");
 	}
 
 	async fn parsed_body(selftext: &str) -> String {

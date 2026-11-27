@@ -3,7 +3,7 @@
 #![allow(clippy::cmp_owned)]
 
 use cached::proc_macro::cached;
-use clap::{builder::BoolishValueParser, Arg, ArgAction, ArgMatches, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::ExitCode;
 use std::sync::LazyLock;
@@ -108,8 +108,18 @@ async fn style() -> Result<Response<Body>, String> {
 	)
 }
 
+/// Parses a boolean flag value. An empty value (`IPV4_ONLY=` from a compose file whose
+/// host variable is unset) counts as false; anything but a boolean word is an error.
+fn parse_flag(value: &str) -> Result<bool, String> {
+	match value.to_ascii_lowercase().as_str() {
+		"" | "n" | "no" | "f" | "false" | "off" | "0" => Ok(false),
+		"y" | "yes" | "t" | "true" | "on" | "1" => Ok(true),
+		_ => Err(format!("`{value}` is not a boolean (use true, false, 1, 0, on, off, yes or no)")),
+	}
+}
+
 /// Builds the command line. `-4`/`-6` also read `IPV4_ONLY`/`IPV6_ONLY`, which must be
-/// a boolean (`true`, `false`, `1`, `0`, `on`, `off`, ...); any other value is an error.
+/// a boolean (see [`parse_flag`]).
 fn cli() -> Command {
 	Command::new("Redlib")
 		.version(env!("CARGO_PKG_VERSION"))
@@ -119,7 +129,7 @@ fn cli() -> Command {
 				.short('4')
 				.long("ipv4-only")
 				.env("IPV4_ONLY")
-				.value_parser(BoolishValueParser::new())
+				.value_parser(parse_flag)
 				.help("Listen on IPv4 only")
 				.action(ArgAction::SetTrue),
 		)
@@ -128,7 +138,7 @@ fn cli() -> Command {
 				.short('6')
 				.long("ipv6-only")
 				.env("IPV6_ONLY")
-				.value_parser(BoolishValueParser::new())
+				.value_parser(parse_flag)
 				.help("Listen on IPv6 only")
 				.action(ArgAction::SetTrue),
 		)
@@ -177,11 +187,14 @@ async fn main() -> ExitCode {
 	// Initialize logger
 	pretty_env_logger::init();
 
+	// Parse arguments first so `--help` and `--version` work with a broken redlib.toml.
+	let matches = cli().get_matches();
+
 	// A broken redlib.toml must stop startup before anything else happens.
 	info!("Evaluating config.");
 	LazyLock::force(&config::CONFIG);
 
-	match run().await {
+	match run(&matches).await {
 		Ok(()) => ExitCode::SUCCESS,
 		Err(message) => {
 			eprintln!("{message}");
@@ -190,9 +203,8 @@ async fn main() -> ExitCode {
 	}
 }
 
-async fn run() -> Result<(), String> {
-	let matches = cli().get_matches();
-	let listener = listener_address(&matches)?;
+async fn run(matches: &ArgMatches) -> Result<(), String> {
+	let listener = listener_address(matches)?;
 
 	match rate_limit_check().await {
 		Ok(()) => {
@@ -565,6 +577,12 @@ mod tests {
 	#[sealed_test(env = [("IPV4_ONLY", "true")])]
 	fn startup_config_and_bind_true_env_enables_ipv4_only() {
 		assert_eq!(listener_for(&[]).unwrap(), "0.0.0.0:8080".parse().unwrap());
+	}
+
+	#[test]
+	#[sealed_test(env = [("IPV4_ONLY", ""), ("IPV6_ONLY", "")])]
+	fn startup_config_and_bind_empty_env_value_counts_as_unset() {
+		assert_eq!(listener_for(&[]).unwrap(), "[::]:8080".parse().unwrap());
 	}
 
 	#[test]
