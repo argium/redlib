@@ -1,6 +1,6 @@
 # Redlib Audit Remediation — Plan
 
-- **Status:** Ready
+- **Status:** Implemented (all 7 slices in draft PRs argium/redlib#1–#7)
 - **Author:** Argi
 - **Created:** 2026-11-28
 - **Language:** Rust (with Askama HTML templates, CSS, vanilla JS, Docker, GitHub Actions)
@@ -223,12 +223,12 @@ Wrap route dispatch in `catch_unwind` to return `500`, log and return `500` on A
 
 #### Slice 3 Milestones
 
-- [ ] **M3.1**: Compression uses lower Brotli quality (proposed: `4`–`5`) on `spawn_blocking`, removes or hash-keys the whole-body `Vec<u8>` cache, and restores original body bytes on error (#14, #30).
-- [ ] **M3.2**: Comment rendering parses cookies once per request without per-comment `Preferences::new()` (#31).
-- [ ] **M3.3**: Static JS assets are served with long-lived cache headers + `?v=` version query strings, and `hls.min.js` loads with `defer` only on pages containing HLS video (#35).
-- [ ] **M3.4**: Handler panics and Askama render failures log errors and return `500` rather than resetting sockets or returning blank `200`s (#32, #39).
-- [ ] **M3.5**: Privacy-safe request logs, `/healthz` endpoint reporting OAuth/upstream health, `redlib --healthcheck` CLI flag, and a bounded graceful-shutdown deadline work end to end (#29 shutdown part, #34 server part).
-- [ ] **M3.6** `[Medium]`: Compressed responses include `Vary: Accept-Encoding`; `client::json` coalesces concurrent identical fetches; subreddit display-name lookup avoids fetching full hot listings; comment children iterate by reference; `ResponseExt::cookies()` reads `Set-Cookie` (or is removed if unused) (#46, #47, #53).
+- [x] **M3.1**: Compression uses lower Brotli quality (proposed: `4`–`5`) on `spawn_blocking`, removes or hash-keys the whole-body `Vec<u8>` cache, and restores original body bytes on error (#14, #30).
+- [x] **M3.2**: Comment rendering parses cookies once per request without per-comment `Preferences::new()` (#31).
+- [x] **M3.3**: Static JS assets are served with long-lived cache headers + `?v=` version query strings, and `hls.min.js` loads with `defer` only on pages containing HLS video (#35).
+- [x] **M3.4**: Handler panics and Askama render failures log errors and return `500` rather than resetting sockets or returning blank `200`s (#32, #39).
+- [x] **M3.5**: Privacy-safe request logs, `/healthz` endpoint reporting OAuth/upstream health, `redlib --healthcheck` CLI flag, and a bounded graceful-shutdown deadline work end to end (#29 shutdown part, #34 server part).
+- [x] **M3.6** `[Medium]`: Compressed responses include `Vary: Accept-Encoding`; `client::json` coalesces concurrent identical fetches; subreddit display-name lookup avoids fetching full hot listings; comment children iterate by reference; `ResponseExt::cookies()` reads `Set-Cookie` (or is removed if unused) (#46, #47, #53).
 
 <details>
 <summary>⚙️ <b>Technical details</b></summary>
@@ -284,11 +284,11 @@ Fix each domain handler and parser with offline JSON fixtures covering every def
 
 #### Slice 4 Milestones
 
-- [ ] **M4.1**: `/r/:sub/w/*page` preserves `*page` in the redirect; `/info.txt` prints all fields under matching labels; `app.json` matches `Config` keys and `REDLIB_DEFAULT_AUTOPLAY_VIDEOS` is read into `Config` (#20, #27, #28).
-- [ ] **M4.2**: RSS respects `REDLIB_ENABLE_RSS=on`, uses `raw_json=1` without unsafe `decode_html`, avoids double-escaping, and emits a valid RSS 2.0 `<link>` on user feeds (#16).
-- [ ] **M4.3**: Search queries, subreddit search, and search pagination percent-encode `&`, `#`, `+`, and `%` without `&quot;` double-escaping, and comment search matches text rather than HTML markup (#17, #18).
-- [ ] **M4.4**: `rewrite_emotes` pairs each emote's own ID, URL, and height accurately in mixed GIF/emote comments (#19).
-- [ ] **M4.5** `[Medium]`: Flair-search and wall/NSFW redirect links are URL-encoded; `GalleryMedia::parse` skips invalid/missing items; `Preferences` export/import uses versioned serialisation while remaining backward-compatible with `KNOWN_GOOD_CONFIGS` v1 payloads (#48 URL-encoding part, #49, #50).
+- [x] **M4.1**: `/r/:sub/w/*page` preserves `*page` in the redirect; `/info.txt` prints all fields under matching labels; `app.json` matches `Config` keys and `REDLIB_DEFAULT_AUTOPLAY_VIDEOS` is read into `Config` (#20, #27, #28).
+- [x] **M4.2**: RSS respects `REDLIB_ENABLE_RSS=on`, uses `raw_json=1` without unsafe `decode_html`, avoids double-escaping, and emits a valid RSS 2.0 `<link>` on user feeds (#16).
+- [x] **M4.3**: Search queries, subreddit search, and search pagination percent-encode `&`, `#`, `+`, and `%` without `&quot;` double-escaping, and comment search matches text rather than HTML markup (#17, #18).
+- [x] **M4.4**: `rewrite_emotes` pairs each emote's own ID, URL, and height accurately in mixed GIF/emote comments (#19).
+- [x] **M4.5** `[Medium]`: Flair-search and wall/NSFW redirect links are URL-encoded; `GalleryMedia::parse` skips invalid/missing items; `Preferences` export/import uses versioned serialisation while remaining backward-compatible with `KNOWN_GOOD_CONFIGS` v1 payloads (#48 URL-encoding part, #49, #50).
 
 <details>
 <summary>⚙️ <b>Technical details</b></summary>
@@ -353,11 +353,11 @@ Fix HTML validity and keyboard accessibility: move `video_quality` out of `<head
 
 #### Slice 5 Milestones
 
-- [ ] **M5.1**: `playHLSVideo.js` caps fatal retries with backoff and falls back cleanly with an error state; `check_update.js` reports commit lag without throwing; `copy.js` works on plain HTTP and shows visual feedback (#15, #26, #42 copy part).
-- [ ] **M5.2**: `/opensearch.xml` uses the instance's actual host/base URL, and `og:image`/`twitter:image`/`og:video` emit absolute URLs when `REDLIB_FULL_URL` or `Host` is known (#25, #43).
-- [ ] **M5.3**: All form controls, icon buttons, mobile nav links, and HLS quality selectors have accessible names; no `<div id="video_quality">` in `<head>`; unclosed gallery `<p>` is closed (#21, #42 gallery `<p>` part).
-- [ ] **M5.4**: Focus rings remain visible on mobile search, sort/listing tabs, and pagination; spoilers and blurred media are revealable by keyboard (`:focus-within` / focusable control); skip-to-content link and feed `<h1>` landmarks are present (#21, #44).
-- [ ] **M5.5** `[Medium]`: `highlighted.js` loads on image and video single-thread posts; unquoted `href`, duplicate IDs (`#search`, `#sort`, `#update-status`), `<legend>` outside `<fieldset>`, and `<button>` inside `<a>` are fixed (#48 markup part, #52).
+- [x] **M5.1**: `playHLSVideo.js` caps fatal retries with backoff and falls back cleanly with an error state; `check_update.js` reports commit lag without throwing; `copy.js` works on plain HTTP and shows visual feedback (#15, #26, #42 copy part).
+- [x] **M5.2**: `/opensearch.xml` uses the instance's actual host/base URL, and `og:image`/`twitter:image`/`og:video` emit absolute URLs when `REDLIB_FULL_URL` or `Host` is known (#25, #43).
+- [x] **M5.3**: All form controls, icon buttons, mobile nav links, and HLS quality selectors have accessible names; no `<div id="video_quality">` in `<head>`; unclosed gallery `<p>` is closed (#21, #42 gallery `<p>` part).
+- [x] **M5.4**: Focus rings remain visible on mobile search, sort/listing tabs, and pagination; spoilers and blurred media are revealable by keyboard (`:focus-within` / focusable control); skip-to-content link and feed `<h1>` landmarks are present (#21, #44).
+- [x] **M5.5** `[Medium]`: `highlighted.js` loads on image and video single-thread posts; unquoted `href`, duplicate IDs (`#search`, `#sort`, `#update-status`), `<legend>` outside `<fieldset>`, and `<button>` inside `<a>` are fixed (#48 markup part, #52).
 
 <details>
 <summary>⚙️ <b>Technical details</b></summary>
@@ -419,11 +419,11 @@ Fix responsive layouts: auto-height `.prefs-group`, scrollable `.popup-inner` (`
 
 #### Slice 6 Milestones
 
-- [ ] **M6.1**: All 18 themes define explicit `--visited`, muted text, and accent/button contrast >= 4.5:1; `.md` links are underlined (#22).
-- [ ] **M6.2**: Typography uses `rem`, readable body/comment `line-height`, `font-display: swap`, clear post-title vs. markdown heading hierarchy, and ~70 ch max prose measure in wide mode (#24, #41).
-- [ ] **M6.3**: Settings rows do not overlap, exit popup scrolls on short viewports, `fixed_navbar` clears all mobile pages, touch targets meet >= 44 px, and mobile feed shows posts before expanded sidebar (#23, #41).
-- [ ] **M6.4**: Comment threads use `<div role="group">`, higher-contrast collapsible guide lines, and capped mobile indent depth; error pages offer retry, empty feeds offer recovery cues, galleries omit empty `<p>` captions and show "1 of N" + post-title alt text, and settings save/restore show inline confirmation and user-friendly errors (#40, #42).
-- [ ] **M6.5** `[Medium]`: All 18 themes declare `color-scheme`; `prefers-reduced-motion` (including video autoplay) and `forced-colors` are respected; monospace stack + inline-code padding, `.sr-only` upvote labels, humanised theme names, and "Reset to defaults" are in place (#51, #54).
+- [x] **M6.1**: All 18 themes define explicit `--visited`, muted text, and accent/button contrast >= 4.5:1; `.md` links are underlined (#22).
+- [x] **M6.2**: Typography uses `rem`, readable body/comment `line-height`, `font-display: swap`, clear post-title vs. markdown heading hierarchy, and ~70 ch max prose measure in wide mode (#24, #41).
+- [x] **M6.3**: Settings rows do not overlap, exit popup scrolls on short viewports, `fixed_navbar` clears all mobile pages, touch targets meet >= 44 px, and mobile feed shows posts before expanded sidebar (#23, #41).
+- [x] **M6.4**: Comment threads use `<div role="group">`, higher-contrast collapsible guide lines, and capped mobile indent depth; error pages offer retry, empty feeds offer recovery cues, galleries omit empty `<p>` captions and show "1 of N" + post-title alt text, and settings save/restore show inline confirmation and user-friendly errors (#40, #42).
+- [x] **M6.5** `[Medium]`: All 18 themes declare `color-scheme`; `prefers-reduced-motion` (including video autoplay) and `forced-colors` are respected; monospace stack + inline-code padding, `.sr-only` upvote labels, humanised theme names, and "Reset to defaults" are in place (#51, #54).
 
 <details>
 <summary>⚙️ <b>Technical details</b></summary>
@@ -470,10 +470,10 @@ Update `pull-request.yml` to drop `NEXTEST_RETRIES: 10`, enforce `--locked`, add
 
 #### Slice 7 Milestones
 
-- [ ] **M7.1**: `main-docker.yml` runs only on successful upstream builds and packages the exact commit's verified binary (with SHA-256 check), eliminating duplicate musl release builds (#11, #37).
-- [ ] **M7.2**: `compose.yaml`, `compose.dev.yaml`, `heroku.yml`, `Dockerfile`, `Dockerfile.alpine`, and `Dockerfile.ubuntu` all build cleanly on supported base images and use `redlib --healthcheck` with sensible intervals/`start_period` (#12, #34 container wiring).
-- [ ] **M7.3**: `pull-request.yml` drops `NEXTEST_RETRIES: 10`, enforces `--locked`, `clippy --all-targets`, `rust-cache`, `checkout@v4`, dependency audit, and a PR container/musl smoke build; RC crates are exact-pinned in `Cargo.toml` (#36 CI part, #37).
-- [ ] **M7.4** `[Medium]`: `.dockerignore` excludes `.git`, `.devcontainer/devcontainer.json` omits `postStartCommand` full builds, `flake.nix` pins Rust `1.81` with checks enabled, and `justfile` defines `fmt`, `clippy`, `test`, and `lint` recipes (#55).
+- [x] **M7.1**: `main-docker.yml` runs only on successful upstream builds and packages the exact commit's verified binary (with SHA-256 check), eliminating duplicate musl release builds (#11, #37).
+- [x] **M7.2**: `compose.yaml`, `compose.dev.yaml`, `heroku.yml`, `Dockerfile`, `Dockerfile.alpine`, and `Dockerfile.ubuntu` all build cleanly on supported base images and use `redlib --healthcheck` with sensible intervals/`start_period` (#12, #34 container wiring).
+- [x] **M7.3**: `pull-request.yml` drops `NEXTEST_RETRIES: 10`, enforces `--locked`, `clippy --all-targets`, `rust-cache`, `checkout@v4`, dependency audit, and a PR container/musl smoke build; RC crates are exact-pinned in `Cargo.toml` (#36 CI part, #37).
+- [x] **M7.4** `[Medium]`: `.dockerignore` excludes `.git`, `.devcontainer/devcontainer.json` omits `postStartCommand` full builds, `flake.nix` pins Rust `1.81` with checks enabled, and `justfile` defines `fmt`, `clippy`, `test`, and `lint` recipes (#55).
 
 <details>
 <summary>⚙️ <b>Technical details</b></summary>

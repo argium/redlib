@@ -4,7 +4,7 @@ This README indexes the project workspace. Keep it current as artifacts are crea
 
 | Field | Value |
 | --- | --- |
-| Status | In progress |
+| Status | In review |
 | Owner | Argi |
 | Created | 2026-11-28 |
 | Updated | 2026-11-28 |
@@ -23,17 +23,18 @@ Engineering-led project without a separate `spec.md`; acceptance criteria live i
 | --- | --- | --- |
 | [research.md](./research.md) | Severity-ranked audit findings (#1–#55) | Complete |
 | [intent.md](./intent.md) | Request history and agreed decisions | Agreed |
-| [plan.md](./plan.md) | 7 vertical slices, milestones, and acceptance checks | Ready |
+| [plan.md](./plan.md) | 7 vertical slices, milestones, and acceptance checks | Implemented |
 | [tasks-slice-1.md](./tasks-slice-1.md) | Slice 1 executable tasks | Complete |
 | [tasks-slice-2.md](./tasks-slice-2.md) | Slice 2 executable tasks | Complete |
 | [tasks-slice-3.md](./tasks-slice-3.md) | Slice 3 executable tasks | Complete |
 | [tasks-slice-4.md](./tasks-slice-4.md) | Slice 4 executable tasks | Complete |
 | [tasks-slice-5.md](./tasks-slice-5.md) | Slice 5 executable tasks | Complete |
 | [tasks-slice-6.md](./tasks-slice-6.md) | Slice 6 executable tasks | Complete |
+| [tasks-slice-7.md](./tasks-slice-7.md) | Slice 7 executable tasks | Complete |
 
 ## Next action
 
-Open the Slice 2 draft PR stacked on Slice 1, then compile Slice 3 into `tasks-slice-3.md` on `perf/server-and-observability`.
+All 7 slices are implemented and open as stacked draft PRs (argium/redlib#1–#7, each based on the previous branch). Next: get CI running on the fork, review and merge bottom-up from #1, then plan a `cargo update` to clear the `cargo deny` advisories and make that job blocking.
 
 ## References
 
