@@ -64,6 +64,10 @@ pub struct Config {
 	#[serde(alias = "LIBREDDIT_DEFAULT_HIDE_HLS_NOTIFICATION")]
 	pub(crate) default_hide_hls_notification: Option<String>,
 
+	#[serde(rename = "REDLIB_DEFAULT_AUTOPLAY_VIDEOS")]
+	#[serde(alias = "LIBREDDIT_DEFAULT_AUTOPLAY_VIDEOS")]
+	pub(crate) default_autoplay_videos: Option<String>,
+
 	#[serde(rename = "REDLIB_DEFAULT_HIDE_AWARDS")]
 	#[serde(alias = "LIBREDDIT_DEFAULT_HIDE_AWARDS")]
 	pub(crate) default_hide_awards: Option<String>,
@@ -145,6 +149,7 @@ impl Config {
 			default_blur_nsfw: parse("REDLIB_DEFAULT_BLUR_NSFW"),
 			default_use_hls: parse("REDLIB_DEFAULT_USE_HLS"),
 			default_hide_hls_notification: parse("REDLIB_DEFAULT_HIDE_HLS_NOTIFICATION"),
+			default_autoplay_videos: parse("REDLIB_DEFAULT_AUTOPLAY_VIDEOS"),
 			default_hide_awards: parse("REDLIB_DEFAULT_HIDE_AWARDS"),
 			default_hide_sidebar_and_summary: parse("REDLIB_DEFAULT_HIDE_SIDEBAR_AND_SUMMARY"),
 			default_hide_score: parse("REDLIB_DEFAULT_HIDE_SCORE"),
@@ -193,6 +198,7 @@ fn get_setting_from_config(name: &str, config: &Config) -> Option<String> {
 		"REDLIB_DEFAULT_USE_HLS" => config.default_use_hls.clone(),
 		"REDLIB_DEFAULT_HIDE_HLS_NOTIFICATION" => config.default_hide_hls_notification.clone(),
 		"REDLIB_DEFAULT_WIDE" => config.default_wide.clone(),
+		"REDLIB_DEFAULT_AUTOPLAY_VIDEOS" => config.default_autoplay_videos.clone(),
 		"REDLIB_DEFAULT_HIDE_AWARDS" => config.default_hide_awards.clone(),
 		"REDLIB_DEFAULT_HIDE_SIDEBAR_AND_SUMMARY" => config.default_hide_sidebar_and_summary.clone(),
 		"REDLIB_DEFAULT_HIDE_SCORE" => config.default_hide_score.clone(),
@@ -318,6 +324,26 @@ mod tests {
 	#[sealed_test(env = [("REDLIB_DEFAULT_FILTERS", "news+bestof")])]
 	fn test_default_filters() {
 		assert_eq!(get_setting("REDLIB_DEFAULT_FILTERS"), Some("news+bestof".into()));
+	}
+
+	#[test]
+	#[sealed_test(env = [("REDLIB_DEFAULT_AUTOPLAY_VIDEOS", "on")])]
+	fn wiki_info_and_config_autoplay_default_is_applied_to_preferences() {
+		let request = hyper::Request::get("/").body(hyper::Body::empty()).unwrap();
+		assert_eq!(crate::utils::Preferences::new(&request).autoplay_videos, "on");
+	}
+
+	#[test]
+	fn wiki_info_and_config_app_json_env_names_are_config_keys() {
+		let config_keys = serde_json::to_value(Config::default()).unwrap();
+		let app_json: serde_json::Value = serde_json::from_str(include_str!("../app.json")).unwrap();
+		let unknown: Vec<_> = app_json["env"]
+			.as_object()
+			.unwrap()
+			.keys()
+			.filter(|name| config_keys.get(name.as_str()).is_none())
+			.collect();
+		assert!(unknown.is_empty(), "app.json names variables that Config does not read: {unknown:?}");
 	}
 
 	#[test]

@@ -345,7 +345,7 @@ fn build_app(hsts: Option<&str>) -> server::Server {
 		.get(|r| async move { Ok(redirect(&format!("/r/{}/wiki", r.param("sub").unwrap_or_default()))) }.boxed());
 	app
 		.at("/r/:sub/w/*page")
-		.get(|r| async move { Ok(redirect(&format!("/r/{}/wiki/{}", r.param("sub").unwrap_or_default(), r.param("wiki").unwrap_or_default()))) }.boxed());
+		.get(|r| async move { Ok(redirect(&format!("/r/{}/wiki/{}", r.param("sub").unwrap_or_default(), r.param("page").unwrap_or_default()))) }.boxed());
 	app.at("/r/:sub/wiki").get(|r| subreddit::wiki(r).boxed());
 	app.at("/r/:sub/wiki/*page").get(|r| subreddit::wiki(r).boxed());
 
@@ -779,6 +779,17 @@ mod tests {
 		let (status, body) = page_text(fetch(address, "/healthz").await).await;
 		assert_eq!(status, 503, "{body}");
 		assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["status"], "degraded");
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn wiki_info_and_config_wiki_shortcut_keeps_the_page_path() {
+		let (address, server) = serve_app();
+		for (shortcut, wiki) in [("/r/rust/w/faq/index", "/r/rust/wiki/faq/index"), ("/r/rust/w", "/r/rust/wiki")] {
+			let response = fetch(address, shortcut).await;
+			assert_eq!(response.status(), 302, "{shortcut}");
+			assert_eq!(response.headers()["location"], wiki, "{shortcut}");
+		}
 		server.abort();
 	}
 
