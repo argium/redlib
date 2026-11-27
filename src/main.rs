@@ -14,7 +14,7 @@ use log::{info, warn};
 use redlib::client::{canonical_path, proxy, rate_limit_check, CLIENT};
 use redlib::server::{self, RequestExt};
 use redlib::utils::{error, redirect, ThemeAssets};
-use redlib::{config, duplicates, headers, health, instance_info, post, search, settings, subreddit, user};
+use redlib::{assets, config, duplicates, headers, health, instance_info, post, search, settings, subreddit, user};
 
 use redlib::client::OAUTH_CLIENT;
 
@@ -259,19 +259,11 @@ fn build_app(hsts: Option<&str>) -> server::Server {
 	app.at("/touch-icon-iphone.png").get(|_| iphone_logo().boxed());
 	app.at("/apple-touch-icon.png").get(|_| iphone_logo().boxed());
 	app.at("/opensearch.xml").get(|_| opensearch().boxed());
-	app
-		.at("/playHLSVideo.js")
-		.get(|_| resource(include_str!("../static/playHLSVideo.js"), "text/javascript", true).boxed());
-	app
-		.at("/hls.min.js")
-		.get(|_| resource(include_str!("../static/hls.min.js"), "text/javascript", true).boxed());
-	app
-		.at("/highlighted.js")
-		.get(|_| resource(include_str!("../static/highlighted.js"), "text/javascript", true).boxed());
-	app
-		.at("/check_update.js")
-		.get(|_| resource(include_str!("../static/check_update.js"), "text/javascript", true).boxed());
-	app.at("/copy.js").get(|_| resource(include_str!("../static/copy.js"), "text/javascript", true).boxed());
+	app.at("/playHLSVideo.js").get(|r| async move { assets::script_response("playHLSVideo.js", &r) }.boxed());
+	app.at("/hls.min.js").get(|r| async move { assets::script_response("hls.min.js", &r) }.boxed());
+	app.at("/highlighted.js").get(|r| async move { assets::script_response("highlighted.js", &r) }.boxed());
+	app.at("/check_update.js").get(|r| async move { assets::script_response("check_update.js", &r) }.boxed());
+	app.at("/copy.js").get(|r| async move { assets::script_response("copy.js", &r) }.boxed());
 
 	app.at("/healthz").get(|_| health::healthz().boxed());
 	app.at("/commits.atom").get(|_| async move { proxy_commit_info().await }.boxed());
@@ -442,6 +434,7 @@ async fn run(matches: &ArgMatches) -> Result<(), String> {
 
 	info!("Evaluating instance info.");
 	LazyLock::force(&instance_info::INSTANCE_INFO);
+	assets::warm();
 	info!("Creating OAUTH client.");
 	LazyLock::force(&OAUTH_CLIENT);
 
@@ -721,15 +714,50 @@ mod tests {
 		hyper::Client::new().get(uri).await.unwrap()
 	}
 
+	const SCRIPTS: [&str; 5] = ["hls.min.js", "playHLSVideo.js", "highlighted.js", "check_update.js", "copy.js"];
+
+	fn cache_control(response: &Response<Body>) -> String {
+		response.headers()["cache-control"].to_str().unwrap().to_string()
+	}
+
 	#[tokio::test]
-	async fn static_js_caching_scripts_carry_cache_control() {
+	async fn static_js_caching_only_versioned_urls_are_cached_for_good() {
 		let (address, server) = serve_app();
-		for script in ["/hls.min.js", "/playHLSVideo.js", "/highlighted.js", "/check_update.js", "/copy.js"] {
-			let response = fetch(address, script).await;
-			assert_eq!(response.status(), 200, "{script}");
-			let cache_control = response.headers().get("cache-control").unwrap_or_else(|| panic!("missing Cache-Control for {script}"));
-			assert!(cache_control.to_str().unwrap().contains("max-age"), "{script}: {cache_control:?}");
+		for script in SCRIPTS {
+			let current = format!("/{script}?v={}", assets::version(script));
+			let response = fetch(address, &current).await;
+			assert_eq!(response.status(), 200, "{current}");
+			assert_eq!(cache_control(&response), "public, max-age=31536000, immutable", "{current}");
+
+			for unversioned in [format!("/{script}"), format!("/{script}?v=0000"), format!("/{script}?x=1")] {
+				let cache_control = cache_control(&fetch(address, &unversioned).await);
+				assert!(
+					!cache_control.contains("immutable") && cache_control.contains("max-age=300"),
+					"{unversioned}: {cache_control}"
+				);
+			}
 		}
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn static_js_caching_scripts_are_served_compressed_from_the_precompressed_copy() {
+		let (address, server) = serve_app();
+		let request = |path: &'static str| {
+			let request = Request::get(format!("http://{address}{path}")).header("accept-encoding", "br").body(Body::empty()).unwrap();
+			async move { hyper::Client::new().request(request).await.unwrap() }
+		};
+
+		let first = request("/hls.min.js").await;
+		assert_eq!(first.headers()["content-encoding"], "br");
+		assert_eq!(first.headers()["vary"], "Accept-Encoding");
+		let first = hyper::body::to_bytes(first.into_body()).await.unwrap();
+		let second = hyper::body::to_bytes(request("/hls.min.js").await.into_body()).await.unwrap();
+		assert_eq!(first, second);
+
+		let mut decoded = Vec::new();
+		std::io::copy(&mut brotli::Decompressor::new(std::io::Cursor::new(first.to_vec()), 4096), &mut decoded).unwrap();
+		assert!(decoded == include_bytes!("../static/hls.min.js"), "the served script must decode to the file");
 		server.abort();
 	}
 

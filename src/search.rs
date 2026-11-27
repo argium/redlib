@@ -236,10 +236,10 @@ mod tests {
 	#[tokio::test]
 	async fn static_js_caching_search_loads_hls_only_for_hls_posts() {
 		let with_hls = rendered_results("on", true).await;
-		assert!(
-			with_hls.contains("/hls.min.js?v=") && with_hls.contains("/playHLSVideo.js?v="),
-			"versioned HLS scripts expected"
-		);
+		let hls = format!("/hls.min.js?v={}\" defer", crate::assets::version("hls.min.js"));
+		let player = format!("/playHLSVideo.js?v={}\" defer", crate::assets::version("playHLSVideo.js"));
+		assert!(with_hls.contains(&hls) && with_hls.contains(&player), "content-versioned, deferred HLS scripts expected");
+		assert!(with_hls.find(&hls) < with_hls.find(&player), "hls.min.js must come first so playHLSVideo.js can use Hls");
 		assert!(!rendered_results("on", false).await.contains("hls.min.js"), "no HLS post, no hls.min.js");
 		assert!(!rendered_results("off", true).await.contains("hls.min.js"), "use_hls off, no hls.min.js");
 	}

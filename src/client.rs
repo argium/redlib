@@ -1,6 +1,7 @@
 use crate::dbg_msg;
 use crate::oauth::{force_refresh_token, token_daemon, Oauth, OauthBackendImpl};
 use crate::server::RequestExt;
+use crate::single_flight::SingleFlight;
 use crate::utils::{format_url, Post};
 use arc_swap::ArcSwap;
 use cached::proc_macro::cached;
@@ -455,10 +456,31 @@ fn upstream_failure(status: u16, body_is_empty: bool, ratelimit_remaining: Optio
 	}
 }
 
+/// How long one fetch from Reddit may take in total. The client's read timeout restarts after
+/// every chunk, so on its own a slow trickle of bytes could hold the fetch (and everyone
+/// waiting on it) open indefinitely.
+const JSON_DEADLINE: Duration = Duration::from_secs(20);
+
+/// Concurrent `json` calls for one path wait on a single fetch. Unlike `#[cached(sync_writes)]`
+/// this keeps an entry only while the fetch runs, so a stream of distinct paths cannot grow it.
+static JSON_FLIGHTS: LazyLock<SingleFlight<(String, bool), Result<Value, String>>> = LazyLock::new(SingleFlight::new);
+
+/// Fails `work` with an error once `limit` has passed.
+async fn within<T>(limit: Duration, work: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+	tokio::time::timeout(limit, work)
+		.await
+		.unwrap_or_else(|_| Err(format!("Reddit did not answer within {} seconds. Try refreshing in a few seconds.", limit.as_secs())))
+}
+
 /// Make a request to a Reddit API and parse the JSON response. Concurrent calls for the same
-/// path share one upstream request instead of each spending a rate-limit slot.
-#[cached(size = 100, time = 30, result = true, sync_writes = "by_key")]
+/// path share one upstream request instead of each spending a rate-limit slot, and share its
+/// error too; successful results are cached for 30 seconds.
+#[cached(size = 100, time = 30, result = true)]
 pub async fn json(path: String, quarantine: bool) -> Result<Value, String> {
+	JSON_FLIGHTS.run((path.clone(), quarantine), within(JSON_DEADLINE, fetch_json(path, quarantine))).await
+}
+
+async fn fetch_json(path: String, quarantine: bool) -> Result<Value, String> {
 	// Closure to quickly build errors
 	let err = |msg: &str, e: String, path: String| -> Result<Value, String> {
 		// eprintln!("{} - {}: {}", url, msg, e);
@@ -653,23 +675,14 @@ mod tests {
 
 	const POPULAR_URL: &str = "/r/popular/hot.json?&raw_json=1&geo_filter=GLOBAL";
 
-	static SLOW_FETCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+	#[tokio::test]
+	async fn json_deadline_gives_up_on_a_slow_upstream() {
+		let never_answers = std::future::pending::<Result<Value, String>>();
+		let outcome = within(Duration::from_millis(50), never_answers).await;
+		assert!(outcome.unwrap_err().contains("did not answer"));
 
-	/// Stands in for `json` (which needs live Reddit) with the same `#[cached]` attributes.
-	#[cached(size = 100, time = 30, result = true, sync_writes = "by_key")]
-	async fn slow_fetch(path: String, quarantine: bool) -> Result<String, String> {
-		SLOW_FETCHES.fetch_add(1, Ordering::SeqCst);
-		tokio::time::sleep(Duration::from_millis(100)).await;
-		Ok(format!("{path}{quarantine}"))
-	}
-
-	#[tokio::test(flavor = "multi_thread")]
-	async fn vary_singleflight_and_cookies_concurrent_identical_calls_fetch_once() {
-		let calls: Vec<_> = (0..10).map(|_| tokio::spawn(slow_fetch("/r/rust/hot.json".to_string(), false))).collect();
-		for call in calls {
-			assert_eq!(call.await.unwrap(), Ok("/r/rust/hot.jsonfalse".to_string()));
-		}
-		assert_eq!(SLOW_FETCHES.load(Ordering::SeqCst), 1, "concurrent identical calls must share one upstream request");
+		let answers = async { Ok::<_, String>(serde_json::json!({ "ok": true })) };
+		assert_eq!(within(Duration::from_secs(5), answers).await.unwrap()["ok"], true);
 	}
 
 	#[tokio::test(flavor = "multi_thread")]

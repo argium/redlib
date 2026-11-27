@@ -38,7 +38,7 @@
 	{% else %}
 	<meta property="og:type" content="website">
 	{% if single_thread %}
-	<script src="/highlighted.js?v={{ env!("CARGO_PKG_VERSION") }}" defer></script>
+	<script src="/highlighted.js?v={{ crate::assets::version("highlighted.js") }}" defer></script>
 	{% endif %}
 	{% endif %}
 {% endblock %}

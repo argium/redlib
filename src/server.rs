@@ -9,7 +9,7 @@ use futures_lite::{
 };
 use hyper::{
 	body,
-	body::HttpBody,
+	body::{Bytes, HttpBody},
 	header,
 	service::{make_service_fn, service_fn},
 	HeaderMap,
@@ -149,6 +149,9 @@ enum CompressionType {
 /// Brotli would be nice universally, but Safari (iOS, iPhone, macOS) reportedly
 /// doesn't support it yet.
 const DEFAULT_COMPRESSOR: CompressionType = CompressionType::Gzip;
+
+/// Smaller bodies fit in one IP frame, so compressing them gains nothing.
+const COMPRESSION_MIN_BYTES: usize = 1452;
 
 const BROTLI_QUALITY: i32 = 4;
 const BROTLI_WINDOW_BITS: i32 = 20;
@@ -503,7 +506,8 @@ async fn serve_route(
 		}
 		Ok(Err(msg)) => {
 			warn!("{method} {route} handler returned an error");
-			debug!("{method} {route} handler error: {msg}");
+			// Reddit errors end in `| <path and query>`, which is the visitor's browsing.
+			debug!("{method} {route} handler error: {}", msg.split('|').next().unwrap_or_default().trim_end());
 			new_boilerplate(def_headers, req_headers, 500, if is_head { Body::empty() } else { Body::from(msg) }).await
 		}
 		Err(_panic) => {
@@ -704,6 +708,18 @@ fn determine_compressor(accept_encoding: String) -> Option<CompressionType> {
 	}
 }
 
+/// The best compressor the request's `Accept-Encoding` allows, if any.
+fn requested_compressor(req_headers: &HeaderMap<header::HeaderValue>) -> Option<CompressionType> {
+	let accept_encoding = match req_headers.get(header::ACCEPT_ENCODING)?.to_str() {
+		Ok(value) => value.to_string(),
+		Err(e) => {
+			dbg_msg!(e);
+			return None;
+		}
+	};
+	determine_compressor(accept_encoding)
+}
+
 /// Compress the response body, if possible or desirable. The Body will be
 /// compressed in place, and a new header Content-Encoding will be set
 /// indicating the compression algorithm.
@@ -751,38 +767,71 @@ async fn compress_response(req_headers: &HeaderMap<header::HeaderValue>, res: &m
 	// Don't bother if the size of the size of the response body will fit
 	// within an IP frame (less the bytes that make up the TCP/IP and HTTP
 	// headers).
-	if res.body().size_hint().lower() < 1452 {
+	if res.body().size_hint().lower() < COMPRESSION_MIN_BYTES as u64 {
 		return Ok(());
 	};
+
+	// A body that was encoded up front (see `StaticBody`) is already final.
+	if res.headers().contains_key(header::CONTENT_ENCODING) {
+		return Ok(());
+	}
 
 	// From here on the representation depends on the client's Accept-Encoding, so
 	// shared caches must key on it, whether or not this client gets a compressed body.
 	res.headers_mut().append(header::VARY, header::HeaderValue::from_static("Accept-Encoding"));
 
-	// Check to see which compressor is requested, and if we can use it.
-	let accept_encoding: String = match req_headers.get(header::ACCEPT_ENCODING) {
-		None => return Ok(()), // Client requested no compression.
-
-		Some(hdr) => match String::from_utf8(hdr.as_bytes().into()) {
-			Ok(val) => val,
-
-			#[cfg(debug_assertions)]
-			Err(e) => {
-				dbg_msg!(e);
-				return Ok(());
-			}
-
-			#[cfg(not(debug_assertions))]
-			Err(_) => return Ok(()),
-		},
-	};
-
-	let compressor: CompressionType = match determine_compressor(accept_encoding) {
+	let compressor: CompressionType = match requested_compressor(req_headers) {
 		Some(c) => c,
 		None => return Ok(()),
 	};
 
 	compress_body_in_place(res, compressor).await
+}
+
+/// A body that never changes between requests, compressed once up front instead of on every
+/// request. Compressing a 412 KB script per request is what the per-body cache used to hide.
+pub struct StaticBody {
+	plain: Bytes,
+	gzip: Option<Bytes>,
+	brotli: Option<Bytes>,
+}
+
+impl StaticBody {
+	/// Compresses `plain` now, on the calling thread. Bodies too small to be worth compressing, or
+	/// that fail to compress, are served as they are.
+	pub fn new(plain: &'static [u8]) -> Self {
+		let encode = |compressor| {
+			if plain.len() < COMPRESSION_MIN_BYTES {
+				return None;
+			}
+			compress_body_blocking(compressor, plain).ok().map(Bytes::from)
+		};
+		Self {
+			plain: Bytes::from_static(plain),
+			gzip: encode(CompressionType::Gzip),
+			brotli: encode(CompressionType::Brotli),
+		}
+	}
+
+	/// Puts the body in `res` in the best encoding `req_headers` accepts and sets `Content-Encoding`
+	/// and `Vary`. `compress_response` leaves a response that already has a `Content-Encoding` alone.
+	pub fn apply(&self, req_headers: &HeaderMap<header::HeaderValue>, res: &mut Response<Body>) {
+		let (encoding, body) = match requested_compressor(req_headers) {
+			Some(CompressionType::Brotli) if self.brotli.is_some() => (Some(CompressionType::Brotli), self.brotli.clone()),
+			Some(CompressionType::Gzip) if self.gzip.is_some() => (Some(CompressionType::Gzip), self.gzip.clone()),
+			_ => (None, None),
+		};
+		let headers = res.headers_mut();
+		headers.append(header::VARY, header::HeaderValue::from_static("Accept-Encoding"));
+		headers.remove(header::CONTENT_LENGTH);
+		if let Some(encoding) = encoding {
+			headers.insert(
+				header::CONTENT_ENCODING,
+				header::HeaderValue::from_static(if encoding == CompressionType::Brotli { "br" } else { "gzip" }),
+			);
+		}
+		*res.body_mut() = Body::from(body.unwrap_or_else(|| self.plain.clone()));
+	}
 }
 
 /// Replaces the body of `res` with its compressed form and sets `Content-Encoding`.
@@ -1071,6 +1120,106 @@ mod tests {
 		let mut request_style = Response::new(Body::empty());
 		request_style.headers_mut().insert(header::COOKIE, header::HeaderValue::from_static("a=1"));
 		assert!(request_style.cookies().is_empty());
+	}
+
+	fn err_route(_: Request<Body>) -> BoxResponse {
+		Box::pin(async { Err("Reddit error: boom | /r/secretsub/hot.json?q=hiddenterm".to_string()) })
+	}
+
+	#[tokio::test]
+	async fn request_logs_handler_errors_leave_out_the_visitors_path() {
+		use crate::test_support::captured_logs;
+
+		let logs = captured_logs();
+		let address = free_address();
+		let mut server = Server::new();
+		server.at("/fails").get(err_route);
+		let running = tokio::spawn(server.listen(address));
+
+		assert_eq!(get(address, "/fails", "").await.0, 500);
+		running.abort();
+
+		let logs = logs.lock().unwrap();
+		let error_lines: Vec<&String> = logs.iter().filter(|(_, line)| line.contains("GET /fails handler")).map(|(_, line)| line).collect();
+		assert!(
+			error_lines.iter().any(|line| line.contains("boom")),
+			"the failure reason should still be logged: {error_lines:?}"
+		);
+		for line in &error_lines {
+			assert!(!line.contains("secretsub") && !line.contains("hiddenterm"), "log line leaks the request path: {line}");
+		}
+	}
+
+	fn static_body_fixture() -> (StaticBody, &'static [u8]) {
+		let plain: &'static [u8] = Box::leak(lipsum(5000).into_bytes().into_boxed_slice());
+		(StaticBody::new(plain), plain)
+	}
+
+	fn headers_accepting(encoding: &str) -> HeaderMap {
+		let mut headers = HeaderMap::new();
+		headers.insert(header::ACCEPT_ENCODING, header::HeaderValue::from_str(encoding).unwrap());
+		headers
+	}
+
+	#[tokio::test]
+	async fn static_js_caching_precompressed_body_is_reused_across_requests() {
+		let (body, plain) = static_body_fixture();
+		let mut encoded_bodies = Vec::new();
+		for _ in 0..2 {
+			let mut res = Response::builder().status(200).header(header::CONTENT_TYPE, "text/javascript").body(Body::empty()).unwrap();
+			body.apply(&headers_accepting("br"), &mut res);
+			assert_eq!(res.headers()[header::CONTENT_ENCODING], "br");
+			assert_eq!(res.headers()[header::VARY], "Accept-Encoding");
+			// What the service does next must not compress again.
+			compress_response(&headers_accepting("br"), &mut res).await.unwrap();
+			encoded_bodies.push(body::to_bytes(res.body_mut()).await.unwrap());
+		}
+		assert_eq!(
+			encoded_bodies[0].as_ptr(),
+			encoded_bodies[1].as_ptr(),
+			"the second request compressed the asset again instead of reusing the first result"
+		);
+		let mut decoded = Vec::new();
+		io::copy(&mut BrotliDecompressor::new(io::Cursor::new(encoded_bodies[0].to_vec()), 4096), &mut decoded).unwrap();
+		assert!(decoded == plain, "the precompressed body must decode to the original");
+	}
+
+	#[tokio::test]
+	async fn static_js_caching_precompressed_body_follows_accept_encoding() {
+		let (body, plain) = static_body_fixture();
+		let respond = |accept: Option<&str>| {
+			let mut res = Response::builder().status(200).body(Body::empty()).unwrap();
+			body.apply(&accept.map_or_else(HeaderMap::new, headers_accepting), &mut res);
+			res
+		};
+
+		let mut gzipped = respond(Some("gzip"));
+		assert_eq!(gzipped.headers()[header::CONTENT_ENCODING], "gzip");
+		let mut decoded = Vec::new();
+		io::copy(
+			&mut gzip::Decoder::new(io::Cursor::new(body::to_bytes(gzipped.body_mut()).await.unwrap().to_vec())).unwrap(),
+			&mut decoded,
+		)
+		.unwrap();
+		assert!(decoded == plain);
+
+		let mut identity = respond(None);
+		assert!(identity.headers().get(header::CONTENT_ENCODING).is_none());
+		assert_eq!(identity.headers()[header::VARY], "Accept-Encoding");
+		assert!(body::to_bytes(identity.body_mut()).await.unwrap() == plain);
+	}
+
+	#[tokio::test]
+	async fn static_js_caching_compress_response_leaves_encoded_bodies_alone() {
+		let mut res = Response::builder()
+			.status(200)
+			.header(header::CONTENT_TYPE, "text/javascript")
+			.header(header::CONTENT_ENCODING, "br")
+			.body(Body::from(vec![7u8; 4000]))
+			.unwrap();
+		compress_response(&headers_accepting("gzip"), &mut res).await.unwrap();
+		assert_eq!(res.headers()[header::CONTENT_ENCODING], "br", "an encoded body must not be encoded twice");
+		assert_eq!(body::to_bytes(res.body_mut()).await.unwrap().len(), 4000);
 	}
 
 	#[tokio::test]
