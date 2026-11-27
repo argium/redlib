@@ -973,4 +973,37 @@ mod tests {
 		let gated = subreddit("drugs", true).await;
 		assert!(gated.is_ok());
 	}
+
+	#[test]
+	fn ux_templates_and_settings_feedback_empty_feed_offers_a_way_out() {
+		let sub = || Subreddit {
+			name: "rust".to_string(),
+			..Subreddit::default()
+		};
+		let filtered = SubredditTemplate {
+			no_posts: true,
+			sort: ("top".to_string(), "hour".to_string()),
+			..subreddit_template(sub(), vec![], "off", "/r/rust?sort=top&t=hour")
+		};
+		let html = filtered.render().unwrap();
+		assert!(html.contains("No posts were found."), "{html}");
+		assert_eq!(crate::test_support::recovery_links(&html), ["/r/rust?sort=top&t=hour", "/r/rust", "/"]);
+
+		let unfiltered = SubredditTemplate {
+			no_posts: true,
+			..subreddit_template(sub(), vec![], "off", "/r/rust")
+		};
+		assert_eq!(
+			crate::test_support::recovery_links(&unfiltered.render().unwrap()),
+			["/r/rust", "/"],
+			"nothing to clear on the default feed"
+		);
+	}
+
+	#[tokio::test]
+	async fn themes_and_sr_labels_score_label_is_read_by_screen_readers() {
+		let html = rendered_listing("off", false).await;
+
+		assert!(html.contains("<span class=\"label visually-hidden\"> Upvotes</span>"), "{html}");
+	}
 }

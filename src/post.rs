@@ -549,4 +549,59 @@ mod tests {
 			assert!(comment.render().unwrap().contains("class=\"award\""), "comment {index} should show its award");
 		}
 	}
+
+	#[test]
+	fn ux_templates_and_settings_feedback_replies_are_a_named_group_not_a_quotation() {
+		let listing = json!({ "data": { "children": [{ "kind": "t1", "data": {
+			"id": "c1",
+			"author": "someone",
+			"body": "top",
+			"body_html": "<div class=\"md\"><p>top</p></div>",
+			"score": 1,
+			"created_utc": 1_700_000_000.0,
+			"parent_id": "t3_abc",
+			"replies": comment_listing(1),
+		} }] } });
+		let comments = parse_comments(&listing, "/r/test/comments/link1/a_link/", "op", "", &HashSet::new(), &Preferences::default());
+
+		let html = comments[0].render().unwrap();
+		assert!(html.contains("role=\"group\"") && html.contains("aria-label=\"Replies to u/someone\""), "{html}");
+		assert!(!html.contains("<blockquote"), "replies are not a quotation: {html}");
+
+		let leaf = comments[0].replies[0].render().unwrap();
+		assert!(!leaf.contains("role=\"group\""), "a comment without replies has no empty group: {leaf}");
+	}
+
+	async fn gallery_page(images: usize) -> String {
+		use crate::test_support::post_of_type;
+		let item = |caption: &str| GalleryMedia {
+			url: "/preview/pre/a.jpg".to_string(),
+			width: 100,
+			height: 100,
+			caption: caption.to_string(),
+			outbound_url: String::new(),
+		};
+		let mut gallery = post_of_type("gallery", "", "").await;
+		gallery.gallery = [item("A caption"), item("")].into_iter().take(images).collect();
+		render_post(gallery, "")
+	}
+
+	#[tokio::test]
+	async fn ux_templates_and_settings_feedback_gallery_images_count_and_describe_themselves() {
+		let html = gallery_page(2).await;
+
+		assert!(html.contains("1 of 2") && html.contains("2 of 2"), "{html}");
+		assert!(html.contains("alt=\"A link (image 1 of 2)\"") && html.contains("alt=\"A link (image 2 of 2)\""), "{html}");
+		assert!(html.contains("A caption"), "{html}");
+		let empty_paragraph = regex::Regex::new(r"<p>\s*</p>").unwrap();
+		assert!(!empty_paragraph.is_match(&html), "an image without a caption gets no empty paragraph: {html}");
+	}
+
+	#[tokio::test]
+	async fn ux_templates_and_settings_feedback_a_single_image_has_no_counter() {
+		let html = gallery_page(1).await;
+
+		assert!(!html.contains("1 of 1"), "{html}");
+		assert!(html.contains("alt=\"A link\""), "{html}");
+	}
 }

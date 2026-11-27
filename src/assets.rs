@@ -41,6 +41,7 @@ static SCRIPTS: LazyLock<HashMap<&'static str, Script>> = LazyLock::new(|| {
 		("highlighted.js", include_str!("../static/highlighted.js")),
 		("check_update.js", include_str!("../static/check_update.js")),
 		("copy.js", include_str!("../static/copy.js")),
+		("collapse_thread.js", include_str!("../static/collapse_thread.js")),
 	]
 	.into_iter()
 	.map(|(name, source)| (name, Script::new(source)))

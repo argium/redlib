@@ -693,6 +693,29 @@ where
 	Ok(string.split('+').map(|s| s.to_string()).collect())
 }
 
+/// A theme's file name as a person would write it: `libredditBlack` becomes `Libreddit Black`.
+pub fn theme_label(theme: &str) -> String {
+	// These file names have no capital letter to split at.
+	match theme {
+		"doomone" => return "Doom One".to_string(),
+		"gruvboxdark" => return "Gruvbox Dark".to_string(),
+		"gruvboxlight" => return "Gruvbox Light".to_string(),
+		_ => {}
+	}
+	let mut label = String::new();
+	for (index, character) in theme.chars().enumerate() {
+		if index == 0 {
+			label.extend(character.to_uppercase());
+		} else {
+			if character.is_uppercase() {
+				label.push(' ');
+			}
+			label.push(character);
+		}
+	}
+	label
+}
+
 #[derive(RustEmbed)]
 #[folder = "static/themes/"]
 #[include = "*.css"]
@@ -2383,5 +2406,38 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 		let future = [b"RLP\x63".as_slice(), &valid[4..]].concat();
 		let error = Preferences::from_export_string(&export_string_of(&future), TEST_DECOMPRESSED_LIMIT).unwrap_err();
 		assert!(error.contains("version 99"), "{error}");
+	}
+
+	#[test]
+	fn ux_templates_and_settings_feedback_error_page_offers_to_try_the_page_again() {
+		use askama::Template as _;
+		let html = super::ErrorTemplate {
+			msg: "Failed to parse page JSON data".to_string(),
+			prefs: Preferences::default(),
+			url: "/r/rust?sort=new&t=day".to_string(),
+		}
+		.render()
+		.unwrap();
+
+		let retry = html.split("class=\"retry\" href=\"").nth(1).expect("a retry link").split('"').next().unwrap();
+		assert_eq!(retry.replace("&#38;", "&"), "/r/rust?sort=new&t=day");
+		assert!(html.contains(">Try again</a>"), "{html}");
+	}
+
+	#[test]
+	fn themes_and_sr_labels_theme_names_read_as_words() {
+		for (file_name, label) in [
+			("system", "System"),
+			("libredditBlack", "Libreddit Black"),
+			("icebergDark", "Iceberg Dark"),
+			("tokyoNight", "Tokyo Night"),
+			("midnightPurple", "Midnight Purple"),
+			("gruvboxdark", "Gruvbox Dark"),
+			("gruvboxlight", "Gruvbox Light"),
+			("doomone", "Doom One"),
+			("nord", "Nord"),
+		] {
+			assert_eq!(super::theme_label(file_name), label);
+		}
 	}
 }

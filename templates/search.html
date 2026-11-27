@@ -72,7 +72,12 @@
 		{% endif %}
 
 		{% if no_posts %}
-			<center>No posts were found.</center>
+			{% if sub != "" && params.restrict_sr != "" %}
+				{% let encoded_query = params.q|urlencode_strict %}
+				{% call utils::empty_feed(url, "Search all of Reddit", format!("/search?q={}", encoded_query)) %}
+			{% else %}
+				{% call utils::empty_feed(url, "", "") %}
+			{% endif %}
 		{% endif %}
 
 		{% if all_posts_filtered %}

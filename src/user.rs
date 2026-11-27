@@ -284,4 +284,26 @@ mod tests {
 		assert!(user.is_ok());
 		assert!(user.unwrap().karma > 100);
 	}
+
+	#[tokio::test]
+	async fn ux_templates_and_settings_feedback_empty_profile_offers_a_way_out() {
+		let html = UserTemplate {
+			user: User::default(),
+			posts: Vec::new(),
+			sort: ("hot".to_string(), "".to_string()),
+			ends: (String::new(), String::new()),
+			listing: "overview".to_string(),
+			prefs: Preferences::default(),
+			url: "/user/test".to_string(),
+			redirect_url: "/user/test".to_string(),
+			is_filtered: false,
+			all_posts_filtered: false,
+			all_posts_hidden_nsfw: false,
+			no_posts: true,
+		}
+		.render()
+		.unwrap();
+
+		assert_eq!(crate::test_support::recovery_links(&html), ["/user/test", "/"]);
+	}
 }

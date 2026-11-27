@@ -40,8 +40,10 @@
 		{% else %}
 		<div class="comment_body {% if highlighted %}highlighted{% endif %}">{{ body|safe }}</div>
 		{% endif %}
-		<blockquote class="replies">{% for c in replies -%}{{ c.render().unwrap()|safe }}{%- endfor %}
-		</blockquote>
+		{% if !replies.is_empty() %}
+		<div class="replies" role="group" aria-label="Replies to u/{{ author.name }}">{% for c in replies -%}{{ c.render().unwrap()|safe }}{%- endfor %}
+		</div>
+		{% endif %}
 	</details>
 </div>
 {% endif %}

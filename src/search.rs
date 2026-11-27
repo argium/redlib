@@ -378,4 +378,30 @@ mod tests {
 		let names: Vec<_> = subreddit_results(&listing(), false).into_iter().map(|s| s.name).collect();
 		assert_eq!(names, ["family", "adult"]);
 	}
+
+	#[test]
+	fn ux_templates_and_settings_feedback_empty_search_offers_a_wider_search() {
+		let restricted = SearchTemplate {
+			sub: "rust".to_string(),
+			url: "/r/rust/search?q=ferris&restrict_sr=on".to_string(),
+			..search_template("ferris & co", "")
+		};
+		assert_eq!(
+			crate::test_support::recovery_links(&restricted.render().unwrap()),
+			["/r/rust/search?q=ferris&restrict_sr=on", "/search?q=ferris%20%26%20co", "/"]
+		);
+
+		let everywhere = SearchTemplate {
+			params: SearchParams {
+				restrict_sr: String::new(),
+				..search_template("ferris", "").params
+			},
+			..search_template("ferris", "")
+		};
+		assert_eq!(
+			crate::test_support::recovery_links(&everywhere.render().unwrap()),
+			["/search", "/"],
+			"already searching everywhere"
+		);
+	}
 }

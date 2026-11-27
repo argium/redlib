@@ -63,6 +63,18 @@
 {% endif %}
 {%- endmacro %}
 
+{# An empty feed's way out: reload, widen the search (when `widen_url` is not empty), or go home. #}
+{% macro empty_feed(reload_url, widen_label, widen_url) -%}
+<div class="empty_feed">
+	<p>No posts were found.</p>
+	<ul class="recovery_links">
+		<li><a href="{{ reload_url }}">Reload</a></li>
+		{% if !widen_url.is_empty() %}<li><a href="{{ widen_url }}">{{ widen_label }}</a></li>{% endif %}
+		<li><a href="/">Go home</a></li>
+	</ul>
+</div>
+{%- endmacro %}
+
 {% macro post(post) -%}
 {% set post_should_be_blurred = post.flags.spoiler && prefs.blur_spoiler=="on" -%}
 <!-- POST CONTENT -->
@@ -140,13 +152,16 @@
 	<div class="gallery">
 	{% for image in post.gallery -%}
 		<figure>
-			<a href="{{ image.url }}" ><img loading="lazy" alt="Gallery image" src="{{ image.url }}"/></a>
+			<a href="{{ image.url }}" ><img loading="lazy" alt="{{ post.title }}{% if post.gallery.len() > 1 %} (image {{ loop.index }} of {{ post.gallery.len() }}){% endif %}" src="{{ image.url }}"/></a>
+			{% if post.gallery.len() > 1 || !image.caption.is_empty() || image.outbound_url.len() > 0 %}
 			<figcaption>
-				<p>{{ image.caption }}</p>
+				{% if post.gallery.len() > 1 %}<p class="gallery_count">{{ loop.index }} of {{ post.gallery.len() }}</p>{% endif %}
+				{% if !image.caption.is_empty() %}<p>{{ image.caption }}</p>{% endif %}
 				{% if image.outbound_url.len() > 0 %}
 				<p><a class="outbound_url" href="{{ image.outbound_url }}" rel="nofollow">{{ image.outbound_url }}</a></p>
 				{% endif %}
 			</figcaption>
+			{% endif %}
 		</figure>
 	{%- endfor %}
 	</div>
@@ -165,7 +180,7 @@
     {% else %}
     &#x2022;
     {% endif %}
-    <span class="label"> Upvotes</span></div>
+    <span class="label visually-hidden"> Upvotes</span></div>
 	<div class="post_footer">
 		<ul id="post_links">
 			<li>
@@ -316,7 +331,7 @@
     {% else %}
     &#x2022;
     {% endif %}
-    <span class="label"> Upvotes</span></div>
+    <span class="label visually-hidden"> Upvotes</span></div>
 	<div class="post_body post_preview">
 		{{ post.body|safe }}
 	</div>

@@ -37,6 +37,19 @@ pub async fn post_of_type(post_type: &str, media_url: &str, thumbnail_url: &str)
 	post
 }
 
+/// The `href` of every link in the `recovery_links` list of an empty feed, unescaped.
+pub fn recovery_links(html: &str) -> Vec<String> {
+	let Some(list) = html.split("class=\"recovery_links\"").nth(1).and_then(|rest| rest.split("</ul>").next()) else {
+		return Vec::new();
+	};
+	list
+		.split("href=\"")
+		.skip(1)
+		.filter_map(|rest| rest.split('"').next())
+		.map(|href| href.replace("&#38;", "&"))
+		.collect()
+}
+
 /// The `content` of the `<meta property="...">` tag named `property`.
 pub fn meta_content<'a>(html: &'a str, property: &str) -> Option<&'a str> {
 	let tag = html.split(&format!("<meta property=\"{property}\" content=\"")).nth(1)?;

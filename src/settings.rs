@@ -5,7 +5,7 @@ use std::collections::HashMap;
 // CRATES
 use crate::server::ResponseExt;
 use crate::subreddit::join_until_size_limit;
-use crate::utils::{read_body_limited, redirect, template, Preferences};
+use crate::utils::{param, read_body_limited, redirect, template, Preferences};
 use askama::Template;
 use cookie::Cookie;
 use hyper::{Body, Request, Response};
@@ -18,6 +18,37 @@ use url::form_urlencoded;
 struct SettingsTemplate {
 	prefs: Preferences,
 	url: String,
+	notice: Option<SettingsNotice>,
+}
+
+/// What the settings page says after a form, picked from `?status=` so a link cannot put its own words on the page.
+enum SettingsNotice {
+	Saved,
+	Reset,
+	ImportFailed,
+}
+
+impl SettingsNotice {
+	fn from_status(status: &str) -> Option<Self> {
+		match status {
+			"saved" => Some(Self::Saved),
+			"reset" => Some(Self::Reset),
+			"import_failed" => Some(Self::ImportFailed),
+			_ => None,
+		}
+	}
+
+	fn message(&self) -> &'static str {
+		match self {
+			Self::Saved => "Settings saved.",
+			Self::Reset => "Settings reset to their defaults.",
+			Self::ImportFailed => "That settings export could not be read. Copy the whole text from the export box and try again.",
+		}
+	}
+
+	fn is_error(&self) -> bool {
+		matches!(self, Self::ImportFailed)
+	}
 }
 
 // CONSTANTS
@@ -56,6 +87,7 @@ pub async fn get(req: Request<Body>) -> Result<Response<Body>, String> {
 	let url = req.uri().to_string();
 	Ok(template(&SettingsTemplate {
 		prefs: Preferences::new(&req),
+		notice: param(&url, "status").and_then(|status| SettingsNotice::from_status(&status)),
 		url,
 	}))
 }
@@ -77,7 +109,12 @@ pub async fn set(req: Request<Body>) -> Result<Response<Body>, String> {
 
 	let form = url::form_urlencoded::parse(&body_bytes).collect::<HashMap<_, _>>();
 
-	let mut response = redirect("/settings");
+	// The reset button posts an empty form: with no preference in it, every preference cookie below is removed.
+	let mut response = redirect(if form.contains_key("reset") {
+		"/settings?status=reset"
+	} else {
+		"/settings?status=saved"
+	});
 
 	for &name in &PREFS {
 		match form.get(name) {
@@ -270,16 +307,21 @@ pub async fn update(req: Request<Body>) -> Result<Response<Body>, String> {
 pub async fn encoded_restore(req: Request<Body>) -> Result<Response<Body>, String> {
 	let body = read_body_limited(req.into_body(), ENCODED_RESTORE_MAX_BYTES).await?;
 
-	let encoded_prefs = form_urlencoded::parse(&body)
+	let restore_query = form_urlencoded::parse(&body)
 		.find(|(key, _)| key == "encoded_prefs")
 		.map(|(_, value)| value)
-		.ok_or_else(|| "encoded_prefs parameter not found in request body".to_string())?;
+		.ok_or_else(|| "encoded_prefs parameter not found in request body".to_string())
+		.and_then(|encoded_prefs| Preferences::from_export_string(&encoded_prefs, ENCODED_RESTORE_MAX_DECOMPRESSED_BYTES))
+		.and_then(|prefs| prefs.to_urlencoded());
 
-	let prefs = Preferences::from_export_string(&encoded_prefs, ENCODED_RESTORE_MAX_DECOMPRESSED_BYTES)?;
-
-	let url = format!("/settings/restore/?{}", prefs.to_urlencoded()?);
-
-	Ok(redirect(&url))
+	// The reason goes to the log; the visitor sees a fixed message on /settings, not the decoder's wording.
+	match restore_query {
+		Ok(query) => Ok(redirect(&format!("/settings/restore/?{query}"))),
+		Err(error) => {
+			log::warn!("Settings import refused: {error}");
+			Ok(redirect("/settings?status=import_failed"))
+		}
+	}
 }
 
 #[cfg(test)]
@@ -311,6 +353,7 @@ mod tests {
 				..Preferences::default()
 			},
 			url: "/settings".to_string(),
+			notice: None,
 		}
 		.render()
 		.unwrap()
@@ -385,8 +428,9 @@ mod tests {
 	#[tokio::test]
 	async fn dos_and_shortlink_limits_encoded_restore_rejects_a_deflate_bomb() {
 		let bomb = crate::utils::deflate_compress(vec![0; 2 * 1024 * 1024]).unwrap();
-		let error = encoded_restore(encoded_prefs_request(&base2048::encode(&bomb))).await.unwrap_err();
-		assert!(error.contains("exceeds"), "{error}");
+		let response = encoded_restore(encoded_prefs_request(&base2048::encode(&bomb))).await.unwrap();
+		assert_eq!(response.headers()["Location"], "/settings?status=import_failed");
+		assert!(response.headers().get("Set-Cookie").is_none(), "a refused export must not change any setting");
 	}
 
 	#[tokio::test]
@@ -424,5 +468,91 @@ mod tests {
 		}
 		let req = Request::get("/settings/update?redirect=//evil.com").body(Body::empty()).unwrap();
 		assert_eq!(update(req).await.unwrap().headers()["Location"], "/");
+	}
+
+	async fn settings_text(query: &str) -> String {
+		let response = get(Request::get(format!("/settings{query}")).body(Body::empty()).unwrap()).await.unwrap();
+		String::from_utf8(hyper::body::to_bytes(response.into_body()).await.unwrap().to_vec()).unwrap()
+	}
+
+	#[tokio::test]
+	async fn ux_templates_and_settings_feedback_saving_says_so_on_the_settings_page() {
+		let response = set(Request::post("/settings").body(Body::from("theme=dark")).unwrap()).await.unwrap();
+		assert_eq!(response.headers()["Location"], "/settings?status=saved");
+
+		let html = settings_text("?status=saved").await;
+		assert!(html.contains("role=\"status\"") && html.contains("Settings saved."), "{html}");
+	}
+
+	#[tokio::test]
+	async fn ux_templates_and_settings_feedback_reset_clears_every_preference_and_says_so() {
+		let response = set(Request::post("/settings").body(Body::from("reset=1")).unwrap()).await.unwrap();
+		assert_eq!(response.headers()["Location"], "/settings?status=reset");
+		let cookies: Vec<_> = response.headers().get_all("Set-Cookie").iter().map(|value| value.to_str().unwrap().to_string()).collect();
+		for name in PREFS {
+			assert!(cookies.iter().any(|cookie| cookie.starts_with(&format!("{name}=;"))), "{name} was not cleared: {cookies:?}");
+		}
+		assert!(
+			!cookies.iter().any(|cookie| cookie.starts_with("subscriptions")),
+			"subscriptions are not preferences: {cookies:?}"
+		);
+
+		let html = settings_text("?status=reset").await;
+		assert!(html.contains("role=\"status\"") && html.contains("Settings reset to their defaults."), "{html}");
+	}
+
+	#[tokio::test]
+	async fn ux_templates_and_settings_feedback_a_failed_import_is_an_alert_without_internal_details() {
+		let html = settings_text("?status=import_failed").await;
+
+		assert!(html.contains("role=\"alert\"") && html.contains("could not be read"), "{html}");
+		assert!(!html.contains("deflate") && !html.contains("exceeds"), "{html}");
+	}
+
+	#[tokio::test]
+	async fn ux_templates_and_settings_feedback_unknown_status_shows_nothing() {
+		for query in ["", "?status=%3Cb%3Ehi%3C/b%3E", "?status=Settings%20saved."] {
+			let html = settings_text(query).await;
+			assert!(!html.contains("settings_notice") && !html.contains("<b>hi"), "{query}: {html}");
+		}
+	}
+
+	#[tokio::test]
+	async fn ux_templates_and_settings_feedback_unreadable_imports_return_to_settings() {
+		for request in [
+			encoded_prefs_request("this is not an export"),
+			Request::post("/settings/encoded-restore").body(Body::from("other=1")).unwrap(),
+		] {
+			let response = encoded_restore(request).await.unwrap();
+			assert_eq!(response.headers()["Location"], "/settings?status=import_failed");
+			assert!(response.headers().get("Set-Cookie").is_none());
+		}
+	}
+
+	#[test]
+	fn ux_templates_and_settings_feedback_settings_page_offers_reset_to_defaults() {
+		let html = settings_page();
+
+		let form = html.split("action=\"/settings\" method=\"POST\"").nth(2).expect("a second form posting to /settings");
+		let form = form.split("</form>").next().unwrap();
+		assert!(form.contains("name=\"reset\"") && form.contains("Reset to defaults"), "{form}");
+	}
+
+	#[test]
+	fn themes_and_sr_labels_theme_select_shows_readable_names_and_keeps_file_names_as_values() {
+		let html = SettingsTemplate {
+			prefs: Preferences {
+				available_themes: vec!["system".to_string(), "libredditBlack".to_string()],
+				theme: "libredditBlack".to_string(),
+				..Preferences::default()
+			},
+			url: "/settings".to_string(),
+			notice: None,
+		}
+		.render()
+		.unwrap();
+
+		assert!(html.contains("value=\"libredditBlack\" selected>") && html.contains("Libreddit Black"), "{html}");
+		assert!(!html.contains(">libredditBlack<"), "{html}");
 	}
 }

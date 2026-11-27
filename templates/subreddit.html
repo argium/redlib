@@ -52,7 +52,13 @@
 			{% endif %}
 
 			{% if no_posts %}
-			<center>No posts were found.</center>
+			{% if (sort.0 != "hot" || !sort.1.is_empty()) && sub.name.is_empty() %}
+				{% call utils::empty_feed(url, "Clear the sort and time filter", "/") %}
+			{% else if sort.0 != "hot" || !sort.1.is_empty() %}
+				{% call utils::empty_feed(url, "Clear the sort and time filter", format!("/r/{}", self.sub.name)) %}
+			{% else %}
+				{% call utils::empty_feed(url, "", "") %}
+			{% endif %}
 			{% endif %}
 
 			{% if all_posts_filtered %}
