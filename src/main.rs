@@ -420,35 +420,92 @@ async fn main() {
 }
 
 pub async fn proxy_commit_info() -> Result<Response<Body>, String> {
-	Ok(
-		Response::builder()
-			.status(200)
-			.header("content-type", "application/atom+xml")
-			.body(Body::from(fetch_commit_info().await))
-			.unwrap_or_default(),
-	)
+	Ok(text_response(fetch_commit_info().await, "application/atom+xml"))
 }
 
-#[cached(time = 600)]
-async fn fetch_commit_info() -> String {
-	let url = "https://github.com/redlib-org/redlib/commits/main.atom";
-
-	CLIENT.get(url).send().await.expect("Failed to request GitHub").text().await.expect("Failed to read body")
+#[cached(time = 600, result = true)]
+async fn fetch_commit_info() -> Result<String, String> {
+	fetch_text("https://github.com/redlib-org/redlib/commits/main.atom").await
 }
 
 pub async fn proxy_instances() -> Result<Response<Body>, String> {
-	Ok(
-		Response::builder()
-			.status(200)
-			.header("content-type", "application/json")
-			.body(Body::from(fetch_instances().await))
-			.unwrap_or_default(),
-	)
+	Ok(text_response(fetch_instances().await, "application/json"))
 }
 
-#[cached(time = 600)]
-async fn fetch_instances() -> String {
-	let url = "https://raw.githubusercontent.com/redlib-org/redlib-instances/refs/heads/main/instances.json";
+#[cached(time = 600, result = true)]
+async fn fetch_instances() -> Result<String, String> {
+	fetch_text("https://raw.githubusercontent.com/redlib-org/redlib-instances/refs/heads/main/instances.json").await
+}
 
-	CLIENT.get(url).send().await.expect("Failed to request GitHub").text().await.expect("Failed to read body")
+/// Fetches `url` as text, returning an error instead of panicking when the
+/// remote is unreachable or answers with anything but success. `CLIENT` does
+/// not follow redirects, so a 3xx is an error too.
+async fn fetch_text(url: &str) -> Result<String, String> {
+	let response = CLIENT.get(url).send().await.map_err(|e| format!("Failed to request {url}: {e}"))?;
+	if !response.status().is_success() {
+		return Err(format!("Failed to request {url}: HTTP {}", response.status()));
+	}
+	response.text().await.map_err(|e| format!("Failed to read {url}: {e}"))
+}
+
+/// Serves fetched text, or a 502 when the upstream fetch failed.
+fn text_response(body: Result<String, String>, content_type: &str) -> Response<Body> {
+	match body {
+		Ok(body) => Response::builder().status(200).header("content-type", content_type).body(Body::from(body)),
+		Err(e) => {
+			warn!("{e}");
+			Response::builder()
+				.status(502)
+				.header("content-type", "text/plain")
+				.body(Body::from("Upstream request failed"))
+		}
+	}
+	.unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn unreachable_update_source_becomes_bad_gateway() {
+		// Bind and immediately release a port so nothing is listening on it.
+		let address = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+		let fetched = fetch_text(&format!("http://{address}/commits.atom")).await;
+		assert!(fetched.is_err());
+		assert_eq!(text_response(fetched, "application/atom+xml").status(), 502);
+	}
+
+	#[test]
+	fn fetched_text_is_served_with_its_content_type() {
+		let response = text_response(Ok("<feed/>".to_string()), "application/atom+xml");
+		assert_eq!(response.status(), 200);
+		assert_eq!(response.headers()["content-type"], "application/atom+xml");
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn redirected_update_source_is_an_error() {
+		use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		let upstream = tokio::spawn(async move {
+			let (mut socket, _) = listener.accept().await.unwrap();
+			let mut request = Vec::new();
+			while !request.ends_with(b"\r\n\r\n") {
+				let mut byte = [0; 1];
+				socket.read_exact(&mut byte).await.unwrap();
+				request.push(byte[0]);
+			}
+			// GitHub answers a renamed repository with a redirect and an empty body.
+			socket
+				.write_all(b"HTTP/1.1 301 Moved Permanently\r\nLocation: /elsewhere\r\nContent-Length: 0\r\n\r\n")
+				.await
+				.unwrap();
+		});
+
+		let fetched = fetch_text(&format!("http://{address}/commits.atom")).await;
+		upstream.abort();
+		assert!(fetched.is_err(), "an empty redirect body must not be served and cached as the feed");
+	}
 }

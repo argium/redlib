@@ -1559,6 +1559,7 @@ mod tests {
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
+	#[ignore = "requires live Reddit"]
 	async fn test_fetching_subreddit_quarantined() {
 		let subreddit = Post::fetch("/r/drugs", true).await;
 		assert!(subreddit.is_ok());
@@ -1566,6 +1567,7 @@ mod tests {
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
+	#[ignore = "requires live Reddit"]
 	async fn test_fetching_nsfw_subreddit() {
 		// Gonwild is a place for closed, Euclidean Geometric shapes to exchange their nth terms for karma; showing off their edges in a comfortable environment without pressure.
 		// Find a good sub that is tagged NSFW but that actually isn't in case my future employers are watching (they probably are)
@@ -1576,6 +1578,7 @@ mod tests {
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
+	#[ignore = "requires live Reddit"]
 	async fn test_fetching_ws() {
 		let subreddit = Post::fetch("/r/popular", false).await;
 		assert!(subreddit.is_ok());
