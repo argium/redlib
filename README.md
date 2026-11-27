@@ -252,15 +252,27 @@ systemctl --user status redlib.service
 
 If you're on Linux, you can grab a binary from [the newest release](https://github.com/redlib-org/redlib/releases/latest) from GitHub.
 
-Download the binary using [Wget](https://www.gnu.org/software/wget/):
+Each release has one archive per CPU architecture, with a checksum file beside it:
+
+| Architecture | `TARGET` |
+| --- | --- |
+| x86-64 | `x86_64-unknown-linux-musl` |
+| ARM64 | `aarch64-unknown-linux-musl` |
+| 32-bit ARM (ARMv7) | `armv7-unknown-linux-musleabihf` |
+
+Download the archive and its checksum for your architecture using [Wget](https://www.gnu.org/software/wget/), and check the archive against it:
 
 ```bash
-wget https://github.com/redlib-org/redlib/releases/download/v0.40.0/redlib
+TARGET=x86_64-unknown-linux-musl
+wget "https://github.com/redlib-org/redlib/releases/download/v0.40.0/redlib-${TARGET}.tar.gz" \
+     "https://github.com/redlib-org/redlib/releases/download/v0.40.0/redlib-${TARGET}.tar.gz.sha256"
+sha256sum -c "redlib-${TARGET}.tar.gz.sha256"
 ```
 
-Make the binary executable and change its ownership to `root`:
+Unpack the binary, make it executable and change its ownership to `root`:
 
 ```bash
+tar xzf "redlib-${TARGET}.tar.gz"
 sudo chmod +x redlib && sudo chown root:root redlib
 ```
 

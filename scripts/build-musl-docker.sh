@@ -26,6 +26,8 @@ case "$target" in
 esac
 
 image="redlib-builder:${target}"
+# .dockerignore keeps .git out of the build, so hand the commit to build.rs
+git_hash=${GIT_HASH:-$(git rev-parse HEAD 2>/dev/null || echo dev)}
 progress=${DOCKER_BUILD_PROGRESS:-auto}
 printf '\n==> Building %s with Docker (progress: %s)\n' "$target" "$progress"
 docker build \
@@ -35,6 +37,7 @@ docker build \
   --build-arg "RUST_TARGET=${target}" \
   --build-arg "CROSS_GNU_PACKAGES=${cross_gnu_packages}" \
   --build-arg "BINDGEN_EXTRA_CLANG_ARGS=${bindgen_args}" \
+  --build-arg "GIT_HASH=${git_hash}" \
   --file Dockerfile.alpine \
   --tag "$image" \
   .

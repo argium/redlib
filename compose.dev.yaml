@@ -4,6 +4,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.alpine
+      args:
+        GIT_HASH: ${GIT_HASH:-}
     restart: always
     container_name: "redlib"
     ports:

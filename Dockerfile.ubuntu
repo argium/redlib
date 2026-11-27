@@ -21,6 +21,8 @@ RUN rm ./src/main.rs && rmdir ./src
 
 # copy the source and build the redlib binary
 COPY . ./
+# .git is not in the build context, so the commit comes in as a build argument (shown by /info)
+ARG GIT_HASH
 RUN cargo build --release --locked --bin redlib
 RUN echo "finished building redlib!"
 

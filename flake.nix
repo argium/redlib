@@ -14,7 +14,7 @@
     };
   };
 
-  outputs = { nixpkgs, crane, flake-utils, rust-overlay, ... }:
+  outputs = { self, nixpkgs, crane, flake-utils, rust-overlay, ... }:
     flake-utils.lib.eachSystem [ "x86_64-linux" ] (system:
       let
         pkgs = import nixpkgs {
@@ -37,6 +37,8 @@
           filter = path: type:
             (lib.hasInfix "/templates/" path) ||
             (lib.hasInfix "/static/" path) ||
+            # config.rs tests read app.json with include_str!
+            (baseNameOf path == "app.json") ||
             (craneLib.filterCargoSources path type);
         };
 
@@ -44,6 +46,9 @@
           inherit src;
           strictDeps = true;
           doCheck = true;
+
+          # The source filter drops .git, so build.rs cannot ask git for the commit.
+          GIT_HASH = self.rev or "dev";
 
           CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
           CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
