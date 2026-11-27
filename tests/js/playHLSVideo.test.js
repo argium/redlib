@@ -49,7 +49,7 @@ class FakeHls {
  * Runs `playHLSVideo.js` on a page with one HLS video, then plays it so the script creates its
  * `Hls` instance. `mp4` is the video's MP4 fallback `<source>`, or null when it has none.
  */
-function startPlayer({ mp4 = MP4_URL, quality = 'best', play } = {}) {
+function startPlayer({ mp4 = MP4_URL, quality = 'best', play, autoplay = false, reducedMotion = false } = {}) {
 	const timers = fakeTimers();
 	const container = fakeElement('div');
 	const video = fakeElement('video', {
@@ -70,6 +70,7 @@ function startPlayer({ mp4 = MP4_URL, quality = 'best', play } = {}) {
 		cloneNode: () => video,
 		querySelector: (selector) => (selector.includes('video/mp4') && mp4 ? { src: mp4 } : null),
 	});
+	if (autoplay) originalVideo.classNames.add('hls_autoplay');
 	container.appendChild(video);
 	originalVideo.parentNode = container;
 	const source = { src: 'https://redlib.example/hls/abc/HLSPlaylist.m3u8', type: 'application/vnd.apple.mpegurl', parentNode: originalVideo };
@@ -89,6 +90,7 @@ function startPlayer({ mp4 = MP4_URL, quality = 'best', play } = {}) {
 	runScript('playHLSVideo.js', {
 		Hls: hlsClass,
 		setTimeout: timers.setTimeout,
+		window: { matchMedia: (query) => ({ matches: reducedMotion && query === '(prefers-reduced-motion: reduce)' }) },
 		document: {
 			body: { dataset: { videoQuality: quality } },
 			querySelectorAll: () => [source],
@@ -274,4 +276,16 @@ test('a blocked play() on the MP4 fallback is handled, not left as an unhandled 
 	hls.fail('otherError');
 
 	assert.equal(handlers, 1);
+});
+
+test('an autoplay video starts by itself', () => {
+	const { video } = startPlayer({ autoplay: true });
+
+	assert.equal(video.plays, 1);
+});
+
+test('with reduced motion preferred, an autoplay video waits for the visitor to press play', () => {
+	const { video } = startPlayer({ autoplay: true, reducedMotion: true });
+
+	assert.equal(video.plays, 0);
 });

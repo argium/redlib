@@ -274,6 +274,9 @@ fn build_app(hsts: Option<&str>) -> server::Server {
 	app
 		.at("/collapse_thread.js")
 		.get(|r| async move { assets::script_response("collapse_thread.js", &r) }.boxed());
+	app
+		.at("/reduced_motion.js")
+		.get(|r| async move { assets::script_response("reduced_motion.js", &r) }.boxed());
 
 	app.at("/healthz").get(|_| health::healthz().boxed());
 	app.at("/commits.atom").get(|_| async move { proxy_commit_info().await }.boxed());
@@ -724,7 +727,15 @@ mod tests {
 		hyper::Client::new().get(uri).await.unwrap()
 	}
 
-	const SCRIPTS: [&str; 6] = ["hls.min.js", "playHLSVideo.js", "highlighted.js", "check_update.js", "copy.js", "collapse_thread.js"];
+	const SCRIPTS: [&str; 7] = [
+		"hls.min.js",
+		"playHLSVideo.js",
+		"highlighted.js",
+		"check_update.js",
+		"copy.js",
+		"collapse_thread.js",
+		"reduced_motion.js",
+	];
 
 	fn cache_control(response: &Response<Body>) -> String {
 		response.headers()["cache-control"].to_str().unwrap().to_string()

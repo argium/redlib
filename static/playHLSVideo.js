@@ -3,13 +3,15 @@
     // Fatal errors are recovered this many times per kind before the player gives up.
     const MAX_RECOVERIES = 3;
     const qualitySetting = document.body.dataset.videoQuality;
+    // Autoplay is motion the visitor did not ask for when their system asks for less of it.
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     if (Hls.isSupported()) {
         var videoSources = document.querySelectorAll("video source[type='application/vnd.apple.mpegurl']");
         videoSources.forEach(function (source) {
             var playlist = source.src;
 
             var oldVideo = source.parentNode;
-            var autoplay = oldVideo.classList.contains("hls_autoplay");
+            var autoplay = oldVideo.classList.contains("hls_autoplay") && !prefersReducedMotion;
 
             // If HLS is supported natively then don't use hls.js
             if (oldVideo.canPlayType(source.type) === "probably") {
@@ -160,7 +162,7 @@
             }
         });
     } else {
-        var videos = document.querySelectorAll("video.hls_autoplay");
+        var videos = prefersReducedMotion ? [] : document.querySelectorAll("video.hls_autoplay");
         videos.forEach(function (video) {
             video.setAttribute("autoplay", "");
         });

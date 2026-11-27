@@ -1590,10 +1590,9 @@ a.search_subreddit:hover {
     height: 100%;
     /* --foreground is 1.1:1 against the page, so the thread could not be followed. 60% of the text colour is at least 3:1 in every theme. */
     background: color-mix(in srgb, var(--text) 60%, var(--background));
-    /* An invisible 8 px edge on each side makes the line easy to hit. */
-    border: solid transparent;
-    border-width: 0 8px;
-    background-clip: padding-box;
+    /* An unpainted 8 px edge on each side makes the line easy to hit. */
+    padding: 0 8px;
+    background-clip: content-box;
     box-sizing: content-box;
 }
 
@@ -1936,12 +1935,14 @@ input[type="submit"] {
 }
 
 .md code {
-    font-family: monospace, sans-serif;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
     font-size: 0.875rem;
 }
 
 .md code:not(.md pre > code) {
     background: var(--highlighted);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
 }
 
 /* Tables */
@@ -2361,5 +2362,53 @@ th {
     input[type="checkbox"] {
         width: 1.5rem;
         height: 1.5rem;
+    }
+}
+
+/* Motion: system settings ask for less of it, so nothing slides, fades or scrolls smoothly. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+        transition: none !important;
+        animation: none !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* Forced colours replace every background and keep only what the page draws with system colours. */
+@media (forced-colors: active) {
+    svg {
+        stroke: CanvasText;
+    }
+
+    #sort_options > a.selected,
+    #listing_options > a.selected,
+    #feed_list > .selected {
+        text-decoration: underline;
+    }
+
+    .subscribe,
+    .unsubscribe,
+    .filter,
+    .unfilter,
+    .copy,
+    .import,
+    #save,
+    button.submit,
+    .popup-inner a {
+        border: 1px solid ButtonText;
+    }
+
+    /* Forced colours paint the whole border box, so the line gives up its wider hit area. */
+    .line {
+        padding: 0;
+        background-color: CanvasText;
+    }
+
+    /* The reveal-on-focus spoiler would show its text at once if its colours were replaced. */
+    .md-spoiler-text,
+    .md-spoiler-text a {
+        forced-color-adjust: none;
     }
 }

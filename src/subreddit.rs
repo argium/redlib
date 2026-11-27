@@ -1006,4 +1006,23 @@ mod tests {
 
 		assert!(html.contains("<span class=\"label visually-hidden\"> Upvotes</span>"), "{html}");
 	}
+
+	#[tokio::test]
+	async fn themes_and_sr_labels_reduced_motion_script_loads_only_with_autoplay() {
+		let page = |autoplay: &str| {
+			let template = subreddit_template(Subreddit::default(), vec![], "off", "/");
+			SubredditTemplate {
+				prefs: Preferences {
+					autoplay_videos: autoplay.to_string(),
+					..template.prefs
+				},
+				..template
+			}
+			.render()
+			.unwrap()
+		};
+
+		assert!(page("on").contains("/reduced_motion.js?v="));
+		assert!(!page("off").contains("reduced_motion.js"));
+	}
 }

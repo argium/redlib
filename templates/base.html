@@ -81,5 +81,8 @@
 				</div>
 			</footer>
 		{% endblock %}
+		{% if prefs.autoplay_videos == "on" %}
+		<script src="/reduced_motion.js?v={{ crate::assets::version("reduced_motion.js") }}" defer></script>
+		{% endif %}
 	</body>
 </html>
