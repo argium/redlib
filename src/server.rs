@@ -4,7 +4,10 @@
 use brotli::enc::{BrotliCompress, BrotliEncoderParams};
 use cached::proc_macro::cached;
 use cookie::Cookie;
-use futures_lite::{future::Boxed, Future, FutureExt};
+use futures_lite::{
+	future::{self, Boxed},
+	Future, FutureExt,
+};
 use hyper::{
 	body,
 	body::HttpBody,
@@ -19,10 +22,12 @@ use std::{
 	cmp::Ordering,
 	fmt::Display,
 	io,
+	net::SocketAddr,
 	pin::Pin,
 	result::Result,
 	str::{from_utf8, Split},
 	string::ToString,
+	time::Duration,
 };
 use time::OffsetDateTime;
 
@@ -174,8 +179,13 @@ pub struct Route<'a> {
 
 pub struct Server {
 	pub default_headers: HeaderMap,
+	/// How long a client may take to send the request headers of one request.
+	pub header_read_timeout: Duration,
 	router: Router<fn(Request<Body>) -> BoxResponse>,
 }
+
+/// Browsers send headers in one packet; this only needs to outlast a slow mobile connection.
+const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[macro_export]
 macro_rules! headers(
@@ -292,6 +302,7 @@ impl Server {
 	pub fn new() -> Self {
 		Self {
 			default_headers: HeaderMap::new(),
+			header_read_timeout: DEFAULT_HEADER_READ_TIMEOUT,
 			router: Router::new(),
 		}
 	}
@@ -303,7 +314,11 @@ impl Server {
 		}
 	}
 
-	pub fn listen(self, addr: &str) -> Boxed<Result<(), hyper::Error>> {
+	/// Binds `addr` and serves until Ctrl+C or SIGTERM. The address is bound before this
+	/// returns, so a port that is already in use shows up as an `Err` from the future
+	/// rather than a panic.
+	pub fn listen(self, addr: SocketAddr) -> Boxed<Result<(), hyper::Error>> {
+		let header_read_timeout = self.header_read_timeout;
 		let make_svc = make_service_fn(move |_conn| {
 			// For correct borrowing, these values need to be borrowed
 			let router = self.router.clone();
@@ -382,11 +397,14 @@ impl Server {
 			}
 		});
 
-		// Build SocketAddr from provided address
-		let address = &addr.parse().unwrap_or_else(|_| panic!("Cannot parse {addr} as address (example format: 0.0.0.0:8080)"));
+		let builder = match HyperServer::try_bind(&addr) {
+			Ok(builder) => builder,
+			Err(e) => return future::ready(Err(e)).boxed(),
+		};
 
-		// Bind server to address specified above. Gracefully shut down if CTRL+C is pressed
-		let server = HyperServer::bind(address).serve(make_svc).with_graceful_shutdown(async {
+		// Gracefully shut down if CTRL+C is pressed. The header timeout drops connections that
+		// trickle in their headers (slowloris); hyper runs it on the Tokio timer.
+		let server = builder.http1_header_read_timeout(header_read_timeout).serve(make_svc).with_graceful_shutdown(async {
 			#[cfg(windows)]
 			// Wait for the CTRL+C signal
 			tokio::signal::ctrl_c().await.expect("Failed to install CTRL+C signal handler");
@@ -440,7 +458,9 @@ async fn new_boilerplate(
 /// Accept-Encoding: gzip, compress, br
 /// Accept-Encoding: br;q=1.0, gzip;q=0.8, *;q=0.1
 /// ```
-#[cached]
+///
+/// The result is deliberately not cached: the header comes straight from the
+/// client, so a cache keyed on it grows with every distinct value.
 fn determine_compressor(accept_encoding: String) -> Option<CompressionType> {
 	if accept_encoding.is_empty() {
 		return None;
@@ -771,6 +791,43 @@ mod tests {
 
 		// Invalid q-values.
 		assert_eq!(determine_compressor("gzip;q=NAN".to_string()), None);
+	}
+
+	#[test]
+	fn dos_and_shortlink_limits_accept_encoding_variants_are_parsed_independently() {
+		// Header parsing keeps no state between calls, so a stream of distinct values cannot grow memory.
+		// (Before the fix a cache held one entry per distinct header; 500 variants left 500 entries.)
+		for variant in 0..500 {
+			assert_eq!(determine_compressor(format!("gzip;q=0.{variant}, br;q=0.{variant}")), Some(CompressionType::Brotli));
+		}
+	}
+
+	#[tokio::test]
+	async fn startup_config_and_bind_occupied_port_is_an_error() {
+		let occupied = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		let address = occupied.local_addr().unwrap();
+		let result = Server::new().listen(address).await;
+		assert!(result.is_err(), "binding an occupied port must fail with an error the caller can report");
+	}
+
+	#[tokio::test]
+	async fn http1_header_timeout_closes_slow_clients() {
+		use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+		// Bind and release a port so the server can claim it.
+		let address = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+		let mut server = Server::new();
+		server.header_read_timeout = Duration::from_millis(200);
+		let running = tokio::spawn(server.listen(address));
+
+		// A request line and one header, but never the blank line that ends the headers.
+		let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+		client.write_all(b"GET / HTTP/1.1\r\nHost: example.com\r\n").await.unwrap();
+
+		let mut received = Vec::new();
+		let closed = tokio::time::timeout(Duration::from_secs(5), client.read_to_end(&mut received)).await;
+		running.abort();
+		assert!(closed.is_ok(), "the server kept a connection open that never finished its headers");
 	}
 
 	#[test]

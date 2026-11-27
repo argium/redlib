@@ -5,13 +5,11 @@ use std::collections::HashMap;
 // CRATES
 use crate::server::ResponseExt;
 use crate::subreddit::join_until_size_limit;
-use crate::utils::{deflate_decompress, redirect, template, Preferences};
+use crate::utils::{deflate_decompress_limited, read_body_limited, redirect, template, Preferences};
 use askama::Template;
 use cookie::Cookie;
-use futures_lite::StreamExt;
 use hyper::{Body, Request, Response};
 use time::{Duration, OffsetDateTime};
-use tokio::time::timeout;
 use url::form_urlencoded;
 
 // STRUCTS
@@ -23,6 +21,11 @@ struct SettingsTemplate {
 }
 
 // CONSTANTS
+
+/// A settings form carries at most ~20 short preference values.
+const SETTINGS_FORM_MAX_BYTES: usize = 64 * 1024;
+const ENCODED_RESTORE_MAX_BYTES: usize = 1024 * 1024;
+const ENCODED_RESTORE_MAX_DECOMPRESSED_BYTES: u64 = 1024 * 1024;
 
 const PREFS: [&str; 19] = [
 	"theme",
@@ -60,7 +63,7 @@ pub async fn get(req: Request<Body>) -> Result<Response<Body>, String> {
 /// Set cookies using response "Set-Cookie" header
 pub async fn set(req: Request<Body>) -> Result<Response<Body>, String> {
 	// Split the body into parts
-	let (parts, mut body) = req.into_parts();
+	let (parts, body) = req.into_parts();
 
 	// Grab existing cookies
 	let _cookies: Vec<Cookie<'_>> = parts
@@ -70,15 +73,7 @@ pub async fn set(req: Request<Body>) -> Result<Response<Body>, String> {
 		.filter_map(|header| Cookie::parse(header.to_str().unwrap_or_default()).ok())
 		.collect();
 
-	// Aggregate the body...
-	// let whole_body = hyper::body::aggregate(req).await.map_err(|e| e.to_string())?;
-	let body_bytes = body
-		.try_fold(Vec::new(), |mut data, chunk| {
-			data.extend_from_slice(&chunk);
-			Ok(data)
-		})
-		.await
-		.map_err(|e| e.to_string())?;
+	let body_bytes = read_body_limited(body, SETTINGS_FORM_MAX_BYTES).await?;
 
 	let form = url::form_urlencoded::parse(&body_bytes).collect::<HashMap<_, _>>();
 
@@ -273,13 +268,7 @@ pub async fn update(req: Request<Body>) -> Result<Response<Body>, String> {
 }
 
 pub async fn encoded_restore(req: Request<Body>) -> Result<Response<Body>, String> {
-	let body = hyper::body::to_bytes(req.into_body())
-		.await
-		.map_err(|e| format!("Failed to get bytes from request body: {e}"))?;
-
-	if body.len() > 1024 * 1024 {
-		return Err("Request body too large".to_string());
-	}
+	let body = read_body_limited(req.into_body(), ENCODED_RESTORE_MAX_BYTES).await?;
 
 	let encoded_prefs = form_urlencoded::parse(&body)
 		.find(|(key, _)| key == "encoded_prefs")
@@ -288,18 +277,103 @@ pub async fn encoded_restore(req: Request<Body>) -> Result<Response<Body>, Strin
 
 	let bytes = base2048::decode(&encoded_prefs).ok_or_else(|| "Failed to decode base2048 encoded preferences".to_string())?;
 
-	let out = timeout(std::time::Duration::from_secs(1), async { deflate_decompress(bytes) })
-		.await
-		.map_err(|e| format!("Failed to decompress bytes: {e}"))??;
+	let out = deflate_decompress_limited(bytes, ENCODED_RESTORE_MAX_DECOMPRESSED_BYTES)?;
 
-	let mut prefs: Preferences = timeout(std::time::Duration::from_secs(1), async { bincode::deserialize(&out) })
-		.await
-		.map_err(|e| format!("Failed to deserialize preferences: {e}"))?
-		.map_err(|e| format!("Failed to deserialize bytes into Preferences struct: {e}"))?;
+	let mut prefs: Preferences = bincode::deserialize(&out).map_err(|e| format!("Failed to deserialize bytes into Preferences struct: {e}"))?;
 
 	prefs.available_themes = vec![];
 
 	let url = format!("/settings/restore/?{}", prefs.to_urlencoded()?);
 
 	Ok(redirect(&url))
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use futures_lite::StreamExt;
+	use std::sync::{
+		atomic::{AtomicUsize, Ordering},
+		Arc,
+	};
+
+	/// A request body of `chunks` chunks that records how many chunks the reader pulled.
+	fn counting_body(chunk_size: usize, chunks: usize) -> (Body, Arc<AtomicUsize>) {
+		let pulled = Arc::new(AtomicUsize::new(0));
+		let counter = pulled.clone();
+		let stream = futures_lite::stream::iter(0..chunks).map(move |_| {
+			counter.fetch_add(1, Ordering::SeqCst);
+			Ok::<_, std::io::Error>(vec![b'a'; chunk_size])
+		});
+		(Body::wrap_stream(stream), pulled)
+	}
+
+	fn encoded_prefs_request(encoded_prefs: &str) -> Request<Body> {
+		let body = form_urlencoded::Serializer::new(String::new()).append_pair("encoded_prefs", encoded_prefs).finish();
+		Request::post("/settings/encoded-restore").body(Body::from(body)).unwrap()
+	}
+
+	#[tokio::test]
+	async fn dos_and_shortlink_limits_settings_form_body_is_capped_while_streaming() {
+		// 1 MiB offered in 16 KiB chunks.
+		let (body, pulled) = counting_body(16 * 1024, 64);
+		let result = set(Request::post("/settings").body(body).unwrap()).await;
+		assert!(result.is_err(), "an oversized form must be refused");
+		assert!(
+			pulled.load(Ordering::SeqCst) <= 5,
+			"the reader must stop near the cap, but pulled {} chunks",
+			pulled.load(Ordering::SeqCst)
+		);
+	}
+
+	#[tokio::test]
+	async fn dos_and_shortlink_limits_settings_form_still_sets_cookies() {
+		let req = Request::post("/settings").body(Body::from("theme=dark&layout=compact")).unwrap();
+		let response = set(req).await.unwrap();
+		let cookies: Vec<_> = response.headers().get_all("Set-Cookie").iter().map(|value| value.to_str().unwrap().to_string()).collect();
+		assert!(cookies.iter().any(|cookie| cookie.starts_with("theme=dark")), "{cookies:?}");
+		assert!(cookies.iter().any(|cookie| cookie.starts_with("layout=compact")), "{cookies:?}");
+	}
+
+	#[tokio::test]
+	async fn dos_and_shortlink_limits_encoded_restore_body_is_capped_while_streaming() {
+		// 2 MiB offered in 16 KiB chunks; the cap is 1 MiB.
+		let (body, pulled) = counting_body(16 * 1024, 128);
+		let result = encoded_restore(Request::post("/settings/encoded-restore").body(body).unwrap()).await;
+		assert!(result.is_err());
+		assert!(
+			pulled.load(Ordering::SeqCst) <= 65,
+			"the reader must stop near the cap, but pulled {} chunks",
+			pulled.load(Ordering::SeqCst)
+		);
+	}
+
+	#[tokio::test]
+	async fn dos_and_shortlink_limits_encoded_restore_rejects_a_deflate_bomb() {
+		let bomb = crate::utils::deflate_compress(vec![0; 2 * 1024 * 1024]).unwrap();
+		let error = encoded_restore(encoded_prefs_request(&base2048::encode(&bomb))).await.unwrap_err();
+		assert!(error.contains("exceeds"), "{error}");
+	}
+
+	#[tokio::test]
+	async fn dos_and_shortlink_limits_encoded_restore_round_trips_preferences() {
+		let encoded = Preferences::default().to_bincode_str().unwrap();
+		let response = encoded_restore(encoded_prefs_request(&encoded)).await.unwrap();
+		assert!(response.headers()["Location"].to_str().unwrap().starts_with("/settings/restore/?"));
+	}
+
+	#[tokio::test]
+	async fn redirect_safety_settings_update() {
+		for target in ["//evil.com", "/%5Cevil.com", "https://evil.com"] {
+			let req = Request::get(format!("/settings/update?redirect={target}&theme=dark")).body(Body::empty()).unwrap();
+			let location = update(req).await.unwrap().headers()["Location"].to_str().unwrap().to_string();
+			// Only a same-site path may be followed; `https://evil.com` becomes the harmless path `/https://evil.com`.
+			assert!(
+				location.starts_with('/') && !location.starts_with("//") && !location.starts_with("/\\"),
+				"{target} redirected to {location}"
+			);
+		}
+		let req = Request::get("/settings/update?redirect=//evil.com").body(Body::empty()).unwrap();
+		assert_eq!(update(req).await.unwrap().headers()["Location"], "/");
+	}
 }

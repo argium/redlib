@@ -397,10 +397,10 @@ REDLIB_DEFAULT_USE_HLS = "on"
 
 Redlib supports the following command line flags:
 
-- `-4`, `--ipv4-only`: Listen on IPv4 only.
-- `-6`, `--ipv6-only`: Listen on IPv6 only.
+- `-4`, `--ipv4-only` (or `IPV4_ONLY=true`): Listen on IPv4 only. With `--address`, the address must be IPv4.
+- `-6`, `--ipv6-only` (or `IPV6_ONLY=true`): Listen on IPv6 only. With `--address`, the address must be IPv6. The two flags cannot be combined, and `IPV4_ONLY`/`IPV6_ONLY` must be a boolean such as `true` or `false`.
 - `-r`, `--redirect-https`: Redirect all HTTP requests to HTTPS (no longer functional).
-- `-a`, `--address <ADDRESS>`: Sets address to listen on. Default is `[::]`.
+- `-a`, `--address <ADDRESS>`: Sets address to listen on. Default is `[::]` (`0.0.0.0` with `-4`).
 - `-p`, `--port <PORT>`: Port to listen on. Default is `8080`.
 - `-H`, `--hsts <EXPIRE_TIME>`: HSTS header to tell browsers that this site should only be accessed over HTTPS. Default is `604800`.
 

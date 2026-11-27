@@ -11,7 +11,7 @@ pub const DEFAULT_PUSHSHIFT_FRONTEND: &str = "undelete.pullpush.io";
 
 /// Stores the configuration parsed from the environment variables and the
 /// config file. `Config::Default()` contains None for each setting.
-/// When adding more config settings, add it to `Config::load`,
+/// When adding more config settings, add it to `Config::try_load`,
 /// `get_setting_from_config`, both below, as well as
 /// `instance_info::InstanceInfo.to_string`(), README.md and app.json.
 #[derive(Default, Serialize, Deserialize, Clone, Debug)]
@@ -114,13 +114,14 @@ impl Config {
 	/// Load the configuration from the environment variables and the config file.
 	/// In the case that there are no environment variables set and there is no
 	/// config file, this function returns a Config that contains all None values.
-	pub fn load() -> Self {
-		let load_config = |name: &str| {
-			let new_file = read_to_string(name);
-			new_file.ok().and_then(|new_file| toml::from_str::<Self>(&new_file).ok())
+	///
+	/// A config file that exists but cannot be read or parsed is an error: ignoring
+	/// it would silently drop settings such as `REDLIB_SFW_ONLY`.
+	pub fn try_load() -> Result<Self, String> {
+		let config = match read_config_file("redlib.toml")? {
+			Some(config) => config,
+			None => read_config_file("libreddit.toml")?.unwrap_or_default(),
 		};
-
-		let config = load_config("redlib.toml").or_else(|| load_config("libreddit.toml")).unwrap_or_default();
 
 		// This function defines the order of preference - first check for
 		// environment variables with "REDLIB", then check the legacy LIBREDDIT
@@ -131,7 +132,7 @@ impl Config {
 			let legacy_key = key.replace("REDLIB_", "LIBREDDIT_");
 			var(key).ok().or_else(|| var(legacy_key).ok()).or_else(|| get_setting_from_config(key, &config))
 		};
-		Self {
+		Ok(Self {
 			sfw_only: parse("REDLIB_SFW_ONLY"),
 			default_theme: parse("REDLIB_DEFAULT_THEME"),
 			default_front_page: parse("REDLIB_DEFAULT_FRONT_PAGE"),
@@ -156,7 +157,25 @@ impl Config {
 			enable_rss: parse("REDLIB_ENABLE_RSS"),
 			full_url: parse("REDLIB_FULL_URL"),
 			default_remove_default_feeds: parse("REDLIB_DEFAULT_REMOVE_DEFAULT_FEEDS"),
-		}
+		})
+	}
+
+	/// Like [`Config::try_load`], but stops the process on a config file error.
+	/// This backs the `CONFIG` static, which is first read during startup.
+	pub fn load() -> Self {
+		Self::try_load().unwrap_or_else(|e| {
+			eprintln!("{e}");
+			std::process::exit(1);
+		})
+	}
+}
+
+/// Reads and parses a config file. A file that does not exist is `Ok(None)`.
+fn read_config_file(name: &str) -> Result<Option<Config>, String> {
+	match read_to_string(name) {
+		Ok(contents) => toml::from_str(&contents).map(Some).map_err(|e| format!("Failed to parse {name}: {e}")),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+		Err(e) => Err(format!("Failed to read {name}: {e}")),
 	}
 }
 
@@ -211,6 +230,44 @@ mod tests {
 	#[sealed_test(env = [("REDLIB_SFW_ONLY", "on")])]
 	fn test_env_var() {
 		assert!(crate::utils::sfw_only())
+	}
+
+	#[test]
+	#[sealed_test]
+	fn startup_config_and_bind_rejects_malformed_toml() {
+		write("redlib.toml", "REDLIB_SFW_ONLY = ").unwrap();
+		let error = Config::try_load().unwrap_err();
+		assert!(error.contains("redlib.toml"), "{error}");
+	}
+
+	#[test]
+	#[sealed_test]
+	fn startup_config_and_bind_rejects_unreadable_config() {
+		// A directory with the config's name exists but cannot be read as a file.
+		std::fs::create_dir("redlib.toml").unwrap();
+		let error = Config::try_load().unwrap_err();
+		assert!(error.contains("redlib.toml"), "{error}");
+	}
+
+	#[test]
+	#[sealed_test]
+	fn startup_config_and_bind_rejects_malformed_legacy_file() {
+		write("libreddit.toml", "REDLIB_SFW_ONLY = ").unwrap();
+		assert!(Config::try_load().unwrap_err().contains("libreddit.toml"));
+	}
+
+	#[test]
+	#[sealed_test]
+	fn startup_config_and_bind_accepts_missing_files() {
+		let config = Config::try_load().unwrap();
+		assert_eq!(config.sfw_only, None);
+	}
+
+	#[test]
+	#[sealed_test]
+	fn startup_config_and_bind_reads_valid_file() {
+		write("redlib.toml", r#"REDLIB_SFW_ONLY = "on""#).unwrap();
+		assert_eq!(Config::try_load().unwrap().sfw_only, Some("on".to_string()));
 	}
 
 	#[test]

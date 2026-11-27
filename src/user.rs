@@ -1,7 +1,7 @@
 #![allow(clippy::cmp_owned)]
 use crate::client::json;
 use crate::server::RequestExt;
-use crate::utils::{error, filter_posts, format_url, get_filters, nsfw_landing, param, setting, template, Post, Preferences, User};
+use crate::utils::{error, filter_posts, format_url, gating_metadata, get_filters, nsfw_landing, param, setting, sfw_only, template, Post, Preferences, User};
 use crate::{config, utils};
 use askama::Template;
 use chrono::DateTime;
@@ -50,7 +50,10 @@ pub async fn profile(req: Request<Body>) -> Result<Response<Body>, String> {
 	let username = req.param("name").unwrap_or_default();
 
 	// Retrieve info from user about page.
-	let user = user(&username).await.unwrap_or_default();
+	let user = match gating_metadata(user(&username).await, sfw_only()) {
+		Ok(user) => user,
+		Err(msg) => return error(req, &msg).await,
+	};
 
 	let req_url = req.uri().to_string();
 	// Return landing page if this post if this Reddit deems this user NSFW,
@@ -149,7 +152,10 @@ pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
 	let path = format!("/user/{user_str}/{listing}.json?{}&raw_json=1", req.uri().query().unwrap_or_default(),);
 
 	// Get user
-	let user_obj = user(&user_str).await.unwrap_or_default();
+	let user_obj = gating_metadata(user(&user_str).await, sfw_only())?;
+	if user_obj.nsfw && sfw_only() {
+		return Ok(error(req, "RSS is unavailable for NSFW users on this instance.").await.unwrap_or_default());
+	}
 
 	// Get posts
 	let (posts, _) = Post::fetch(&path, false).await?;

@@ -3,7 +3,9 @@
 #![allow(clippy::cmp_owned)]
 
 use cached::proc_macro::cached;
-use clap::{Arg, ArgAction, Command};
+use clap::{builder::BoolishValueParser, Arg, ArgAction, ArgMatches, Command};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::process::ExitCode;
 use std::sync::LazyLock;
 
 use futures_lite::FutureExt;
@@ -106,19 +108,30 @@ async fn style() -> Result<Response<Body>, String> {
 	)
 }
 
-#[tokio::main]
-async fn main() {
-	// Load environment variables
-	_ = dotenvy::dotenv();
-
-	// Initialize logger
-	pretty_env_logger::init();
-
-	let matches = Command::new("Redlib")
+/// Builds the command line. `-4`/`-6` also read `IPV4_ONLY`/`IPV6_ONLY`, which must be
+/// a boolean (`true`, `false`, `1`, `0`, `on`, `off`, ...); any other value is an error.
+fn cli() -> Command {
+	Command::new("Redlib")
 		.version(env!("CARGO_PKG_VERSION"))
 		.about("Private front-end for Reddit written in Rust ")
-		.arg(Arg::new("ipv4-only").short('4').long("ipv4-only").help("Listen on IPv4 only").num_args(0))
-		.arg(Arg::new("ipv6-only").short('6').long("ipv6-only").help("Listen on IPv6 only").num_args(0))
+		.arg(
+			Arg::new("ipv4-only")
+				.short('4')
+				.long("ipv4-only")
+				.env("IPV4_ONLY")
+				.value_parser(BoolishValueParser::new())
+				.help("Listen on IPv4 only")
+				.action(ArgAction::SetTrue),
+		)
+		.arg(
+			Arg::new("ipv6-only")
+				.short('6')
+				.long("ipv6-only")
+				.env("IPV6_ONLY")
+				.value_parser(BoolishValueParser::new())
+				.help("Listen on IPv6 only")
+				.action(ArgAction::SetTrue),
+		)
 		.arg(
 			Arg::new("redirect-https")
 				.short('r')
@@ -131,8 +144,7 @@ async fn main() {
 				.short('a')
 				.long("address")
 				.value_name("ADDRESS")
-				.help("Sets address to listen on")
-				.default_value("[::]")
+				.help("Sets address to listen on [default: [::], or 0.0.0.0 with -4]")
 				.num_args(1),
 		)
 		.arg(
@@ -155,7 +167,32 @@ async fn main() {
 				.default_value("604800")
 				.num_args(1),
 		)
-		.get_matches();
+}
+
+#[tokio::main]
+async fn main() -> ExitCode {
+	// Load environment variables
+	_ = dotenvy::dotenv();
+
+	// Initialize logger
+	pretty_env_logger::init();
+
+	// A broken redlib.toml must stop startup before anything else happens.
+	info!("Evaluating config.");
+	LazyLock::force(&config::CONFIG);
+
+	match run().await {
+		Ok(()) => ExitCode::SUCCESS,
+		Err(message) => {
+			eprintln!("{message}");
+			ExitCode::FAILURE
+		}
+	}
+}
+
+async fn run() -> Result<(), String> {
+	let matches = cli().get_matches();
+	let listener = listener_address(&matches)?;
 
 	match rate_limit_check().await {
 		Ok(()) => {
@@ -171,20 +208,7 @@ async fn main() {
 		}
 	}
 
-	let address = matches.get_one::<String>("address").unwrap();
-	let port = matches.get_one::<String>("port").unwrap();
 	let hsts = matches.get_one("hsts").map(|m: &String| m.as_str());
-
-	let ipv4_only = std::env::var("IPV4_ONLY").is_ok() || matches.get_flag("ipv4-only");
-	let ipv6_only = std::env::var("IPV6_ONLY").is_ok() || matches.get_flag("ipv6-only");
-
-	let listener = if ipv4_only {
-		format!("0.0.0.0:{port}")
-	} else if ipv6_only {
-		format!("[::]:{port}")
-	} else {
-		[address, ":", port].concat()
-	};
 
 	println!("Starting Redlib...");
 
@@ -197,8 +221,6 @@ async fn main() {
 	// in OAUTH case, we need to retrieve the token to avoid paying penalty
 	// at first request
 
-	info!("Evaluating config.");
-	LazyLock::force(&config::CONFIG);
 	info!("Evaluating instance info.");
 	LazyLock::force(&instance_info::INSTANCE_INFO);
 	info!("Creating OAUTH client.");
@@ -368,54 +390,103 @@ async fn main() {
 
 	// Handle obfuscated share links.
 	// Note that this still forces the server to follow the share link to get to the post, so maybe this wants to be updated with a warning before it follow it
-	app.at("/r/:sub/s/:id").get(|req: Request<Body>| {
-		Box::pin(async move {
-			let sub = req.param("sub").unwrap_or_default();
-			match req.param("id").as_deref() {
-				// Share link
-				Some(id) if (8..12).contains(&id.len()) => match canonical_path(format!("/r/{sub}/s/{id}"), 3).await {
-					Ok(Some(path)) => Ok(redirect(&path)),
-					Ok(None) => error(req, "Post ID is invalid. It may point to a post on a community that has been banned.").await,
-					Err(e) => error(req, &e).await,
-				},
+	app.at("/r/:sub/s/:id").get(|req| share_link(req).boxed());
 
-				// Error message for unknown pages
-				_ => error(req, "Nothing here").await,
-			}
-		})
-	});
-
-	app.at("/:id").get(|req: Request<Body>| {
-		Box::pin(async move {
-			match req.param("id").as_deref() {
-				// Sort front page
-				Some("best" | "hot" | "new" | "top" | "rising" | "controversial") => subreddit::community(req).await,
-
-				// Short link for post
-				Some(id) if (5..8).contains(&id.len()) => match canonical_path(format!("/comments/{id}"), 3).await {
-					Ok(path_opt) => match path_opt {
-						Some(path) => Ok(redirect(&path)),
-						None => error(req, "Post ID is invalid. It may point to a post on a community that has been banned.").await,
-					},
-					Err(e) => error(req, &e).await,
-				},
-
-				// Error message for unknown pages
-				_ => error(req, "Nothing here").await,
-			}
-		})
-	});
+	app.at("/:id").get(|req| short_link(req).boxed());
 
 	// Default service in case no routes match
 	app.at("/*").get(|req| error(req, "Nothing here").boxed());
 
 	println!("Running Redlib v{} on {listener}!", env!("CARGO_PKG_VERSION"));
 
-	let server = app.listen(&listener);
+	let server = app.listen(listener);
 
 	// Run this server for... forever!
-	if let Err(e) = server.await {
-		eprintln!("Server error: {e}");
+	server.await.map_err(|e| format!("Server error: {e}"))
+}
+
+/// Where to listen, from the command line (and `IPV4_ONLY`/`IPV6_ONLY`/`PORT`).
+fn listener_address(matches: &ArgMatches) -> Result<SocketAddr, String> {
+	resolve_listener(
+		matches.get_one::<String>("address").map(String::as_str),
+		matches.get_one::<String>("port").expect("port has a default value"),
+		matches.get_flag("ipv4-only"),
+		matches.get_flag("ipv6-only"),
+	)
+}
+
+/// Decides the socket address to bind. Without `address` the wildcard address of
+/// the chosen family is used (IPv6, which also accepts IPv4 on most systems, unless
+/// `-4`). An explicit `address` is never replaced, and must match the family flag.
+fn resolve_listener(address: Option<&str>, port: &str, ipv4_only: bool, ipv6_only: bool) -> Result<SocketAddr, String> {
+	if ipv4_only && ipv6_only {
+		return Err("--ipv4-only (-4) and --ipv6-only (-6) cannot be used together".to_string());
+	}
+	let port: u16 = port.parse().map_err(|_| format!("Cannot parse {port} as a port (expected 0-65535)"))?;
+
+	let ip = match address {
+		Some(address) => {
+			let ip: IpAddr = address
+				.trim_start_matches('[')
+				.trim_end_matches(']')
+				.parse()
+				.map_err(|_| format!("Cannot parse {address} as an IP address (examples: 0.0.0.0, [::], 127.0.0.1)"))?;
+			if ipv4_only && ip.is_ipv6() {
+				return Err(format!("--ipv4-only (-4) conflicts with the IPv6 address {address}"));
+			}
+			if ipv6_only && ip.is_ipv4() {
+				return Err(format!("--ipv6-only (-6) conflicts with the IPv4 address {address}"));
+			}
+			ip
+		}
+		None if ipv4_only => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+		None => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
+	};
+	Ok(SocketAddr::new(ip, port))
+}
+
+/// Reddit's short post ids are base-36. Anything else (`/Login`, `/ab.cde`) is
+/// not a post, so it must not cost an upstream request.
+fn is_short_link_id(id: &str) -> bool {
+	(5..8).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+}
+
+/// Share-link ids are mixed-case alphanumeric.
+fn is_share_link_id(id: &str) -> bool {
+	(8..12).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+/// `/r/:sub/s/:id`: resolves an obfuscated share link to the post's canonical path.
+async fn share_link(req: Request<Body>) -> Result<Response<Body>, String> {
+	let sub = req.param("sub").unwrap_or_default();
+	match req.param("id").as_deref() {
+		// Share link
+		Some(id) if is_share_link_id(id) => match canonical_path(format!("/r/{sub}/s/{id}"), 3).await {
+			Ok(Some(path)) => Ok(redirect(&path)),
+			Ok(None) => error(req, "Post ID is invalid. It may point to a post on a community that has been banned.").await,
+			Err(e) => error(req, &e).await,
+		},
+
+		// Error message for unknown pages
+		_ => error(req, "Nothing here").await,
+	}
+}
+
+/// `/:id`: a front-page sort (`/top`) or a short link to a post (`/1abc23`).
+async fn short_link(req: Request<Body>) -> Result<Response<Body>, String> {
+	match req.param("id").as_deref() {
+		// Sort front page
+		Some("best" | "hot" | "new" | "top" | "rising" | "controversial") => subreddit::community(req).await,
+
+		// Short link for post
+		Some(id) if is_short_link_id(id) => match canonical_path(format!("/comments/{id}"), 3).await {
+			Ok(Some(path)) => Ok(redirect(&path)),
+			Ok(None) => error(req, "Post ID is invalid. It may point to a post on a community that has been banned.").await,
+			Err(e) => error(req, &e).await,
+		},
+
+		// Error message for unknown pages
+		_ => error(req, "Nothing here").await,
 	}
 }
 
@@ -466,6 +537,7 @@ fn text_response(body: Result<String, String>, content_type: &str) -> Response<B
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use sealed_test::prelude::*;
 
 	#[tokio::test(flavor = "multi_thread")]
 	async fn unreachable_update_source_becomes_bad_gateway() {
@@ -474,6 +546,112 @@ mod tests {
 		let fetched = fetch_text(&format!("http://{address}/commits.atom")).await;
 		assert!(fetched.is_err());
 		assert_eq!(text_response(fetched, "application/atom+xml").status(), 502);
+	}
+
+	fn listener_for(args: &[&str]) -> Result<SocketAddr, String> {
+		let matches = cli()
+			.try_get_matches_from(std::iter::once("redlib").chain(args.iter().copied()))
+			.map_err(|e| e.to_string())?;
+		listener_address(&matches)
+	}
+
+	#[test]
+	#[sealed_test(env = [("IPV4_ONLY", "false")])]
+	fn startup_config_and_bind_false_env_does_not_enable_ipv4_only() {
+		assert_eq!(listener_for(&[]).unwrap(), "[::]:8080".parse().unwrap());
+	}
+
+	#[test]
+	#[sealed_test(env = [("IPV4_ONLY", "true")])]
+	fn startup_config_and_bind_true_env_enables_ipv4_only() {
+		assert_eq!(listener_for(&[]).unwrap(), "0.0.0.0:8080".parse().unwrap());
+	}
+
+	#[test]
+	#[sealed_test(env = [("IPV6_ONLY", "maybe")])]
+	fn startup_config_and_bind_invalid_env_value_is_rejected() {
+		assert!(listener_for(&[]).is_err());
+	}
+
+	#[test]
+	#[sealed_test(env = [("IPV4_ONLY", "1")])]
+	fn startup_config_and_bind_explicit_address_is_kept_with_family_flag() {
+		assert_eq!(listener_for(&["-a", "127.0.0.1"]).unwrap(), "127.0.0.1:8080".parse().unwrap());
+		assert_eq!(listener_for(&["-4", "-a", "192.168.1.5", "-p", "9000"]).unwrap(), "192.168.1.5:9000".parse().unwrap());
+	}
+
+	#[test]
+	fn startup_config_and_bind_family_flags_pick_the_wildcard_address() {
+		assert_eq!(listener_for(&[]).unwrap(), "[::]:8080".parse().unwrap());
+		assert_eq!(listener_for(&["-4"]).unwrap(), "0.0.0.0:8080".parse().unwrap());
+		assert_eq!(listener_for(&["-6"]).unwrap(), "[::]:8080".parse().unwrap());
+		assert_eq!(listener_for(&["-6", "-a", "[::1]"]).unwrap(), "[::1]:8080".parse().unwrap());
+		assert_eq!(listener_for(&["-a", "::1"]).unwrap(), "[::1]:8080".parse().unwrap());
+	}
+
+	#[test]
+	fn startup_config_and_bind_conflicting_flags_are_errors() {
+		assert!(listener_for(&["-4", "-6"]).is_err());
+		assert!(listener_for(&["-4", "-a", "::1"]).is_err());
+		assert!(listener_for(&["-6", "-a", "127.0.0.1"]).is_err());
+	}
+
+	#[test]
+	#[sealed_test(env = [("IPV4_ONLY", "on"), ("IPV6_ONLY", "on")])]
+	fn startup_config_and_bind_conflicting_env_flags_are_errors() {
+		assert!(listener_for(&[]).unwrap_err().contains("cannot be used together"));
+	}
+
+	#[test]
+	fn startup_config_and_bind_invalid_address_or_port_is_an_error_not_a_panic() {
+		assert!(listener_for(&["-a", "not-an-address"]).unwrap_err().contains("not-an-address"));
+		assert!(listener_for(&["-p", "http"]).unwrap_err().contains("http"));
+		assert!(listener_for(&["-p", "70000"]).is_err());
+	}
+
+	fn request_with_params(path: &str, params: &[(&str, &str)]) -> Request<Body> {
+		let mut request = Request::get(path).body(Body::empty()).unwrap();
+		let mut route_params = route_recognizer::Params::new();
+		for (name, value) in params {
+			route_params.insert(name.to_string(), value.to_string());
+		}
+		request.set_params(route_params);
+		request
+	}
+
+	async fn page_text(response: Response<Body>) -> (u16, String) {
+		let status = response.status().as_u16();
+		let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+		(status, String::from_utf8_lossy(&body).into_owned())
+	}
+
+	// Each of these would otherwise reach `canonical_path`, which asks Reddit; the handler must answer locally.
+	#[tokio::test]
+	async fn dos_and_shortlink_limits_non_base36_short_links_make_no_upstream_call() {
+		for id in ["Login", "wp-adm", "ab.cde", "abc-de", "ab_cde", "%2e%2e%2e"] {
+			let (status, body) = page_text(short_link(request_with_params(&format!("/{id}"), &[("id", id)])).await.unwrap()).await;
+			assert_eq!(status, 404, "{id}");
+			assert!(body.contains("Nothing here"), "{id}: {body}");
+		}
+	}
+
+	#[tokio::test]
+	async fn dos_and_shortlink_limits_malformed_share_ids_make_no_upstream_call() {
+		for id in ["abcdefg-hi", "abc.defghi", "abc%20defgh", "abcdefg_hij"] {
+			let (status, body) = page_text(share_link(request_with_params(&format!("/r/rust/s/{id}"), &[("sub", "rust"), ("id", id)])).await.unwrap()).await;
+			assert_eq!(status, 404, "{id}");
+			assert!(body.contains("Nothing here"), "{id}: {body}");
+		}
+	}
+
+	#[test]
+	fn dos_and_shortlink_limits_id_alphabets() {
+		// Real short ids are lowercase base-36; lowercase words such as `login` are valid ids and are deliberately not special-cased.
+		assert!(is_short_link_id("1abc23") && is_short_link_id("zzzzz") && is_short_link_id("login"));
+		assert!(!is_short_link_id("1ABC23") && !is_short_link_id("abcd") && !is_short_link_id("abcdefgh") && !is_short_link_id("ab-cde"));
+		// Real share ids are mixed-case.
+		assert!(is_share_link_id("Sx3Yb7LbhH") && is_share_link_id("abcdefgh"));
+		assert!(!is_share_link_id("abcdefg") && !is_share_link_id("abcdefghijkl") && !is_share_link_id("abcdefg-hi"));
 	}
 
 	#[test]

@@ -362,6 +362,11 @@ impl Post {
 			Err(msg) => return Err(msg),
 		};
 
+		Self::from_listing(&res).await
+	}
+
+	/// Parse a listing response into posts and the "after" value
+	pub async fn from_listing(res: &Value) -> Result<(Vec<Self>, String), String> {
 		// Fetch the list of posts from the JSON response
 		let Some(post_list) = res["data"]["children"].as_array() else {
 			return Err("No posts found".to_string());
@@ -372,6 +377,11 @@ impl Post {
 		// For each post from posts list
 		for post in post_list {
 			let data = &post["data"];
+
+			// Listings, search and RSS all come through here, so this is where an SFW-only instance drops NSFW posts.
+			if sfw_only() && data["over_18"].as_bool().unwrap_or_default() {
+				continue;
+			}
 
 			let (rel_time, created) = time(data["created_utc"].as_f64().unwrap_or_default());
 			let created_ts = data["created_utc"].as_f64().unwrap_or_default().round() as u64;
@@ -749,11 +759,36 @@ pub fn deflate_compress(i: Vec<u8>) -> Result<Vec<u8>, String> {
 	e.finish().into_result().map_err(|e| e.to_string())
 }
 
-pub fn deflate_decompress(i: Vec<u8>) -> Result<Vec<u8>, String> {
-	let mut decoder = Decoder::new(&i[..]);
+/// Inflates `i`, failing if the output would be larger than `max_bytes`. The
+/// input is untrusted, and a few kilobytes of deflate can expand to gigabytes.
+pub fn deflate_decompress_limited(i: Vec<u8>, max_bytes: u64) -> Result<Vec<u8>, String> {
+	let decoder = Decoder::new(&i[..]);
 	let mut out = Vec::new();
-	decoder.read_to_end(&mut out).map_err(|e| format!("Failed to read from gzip decoder: {e}"))?;
+	// Reading one byte past the limit tells "exactly at the limit" from "over it".
+	decoder
+		.take(max_bytes + 1)
+		.read_to_end(&mut out)
+		.map_err(|e| format!("Failed to read from gzip decoder: {e}"))?;
+	if out.len() as u64 > max_bytes {
+		return Err(format!("Decompressed data exceeds the limit of {max_bytes} bytes"));
+	}
 	Ok(out)
+}
+
+/// Reads a request body, failing as soon as it passes `max_bytes` instead of
+/// buffering whatever the client chooses to send.
+pub async fn read_body_limited(mut body: Body, max_bytes: usize) -> Result<Vec<u8>, String> {
+	use hyper::body::HttpBody;
+
+	let mut data = Vec::new();
+	while let Some(chunk) = body.data().await {
+		let chunk = chunk.map_err(|e| format!("Failed to read request body: {e}"))?;
+		if data.len() + chunk.len() > max_bytes {
+			return Err("Request body too large".to_string());
+		}
+		data.extend_from_slice(&chunk);
+	}
+	Ok(data)
 }
 
 /// Gets a `HashSet` of filters from the cookie in the given `Request`.
@@ -784,6 +819,147 @@ pub fn filter_posts(posts: &mut Vec<Post>, filters: &HashSet<String>) -> (u64, b
 	}
 }
 
+/// Marks the start and end of a spoiler between [`mark_spoilers`] and the event
+/// pass in [`render_markdown_body`]. Private-use characters never occur in real
+/// post text; any that do are stripped from the input first.
+const SPOILER_OPEN: char = '\u{E000}';
+const SPOILER_CLOSE: char = '\u{E001}';
+
+/// Reddit's `>!spoiler!<` syntax.
+static REGEX_SPOILER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r">!(.+?)!<").unwrap());
+
+/// Reddit's `r/subreddit` and `u/user` shorthand, with or without a leading `/`.
+/// The first group keeps the character before the match so `foo/r/bar` and
+/// `bar_r/baz` are not linked.
+static REGEX_SUBREDDIT_OR_USER: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(^|[^\w/])(/?)(r|u)/([A-Za-z0-9_]{2,21})\b").unwrap());
+
+/// Swaps `>!spoiler!<` for [`SPOILER_OPEN`]/[`SPOILER_CLOSE`] outside fenced
+/// code. This runs before markdown parsing because a line that starts with `>`
+/// would otherwise become a block quote.
+fn mark_spoilers(markdown: &str) -> String {
+	let mut open_fence: Option<char> = None;
+	let mut marked = String::with_capacity(markdown.len());
+	for line in markdown.split_inclusive('\n') {
+		let indent_trimmed = line.trim_start_matches(' ');
+		let fence_char = if indent_trimmed.starts_with("```") {
+			Some('`')
+		} else if indent_trimmed.starts_with("~~~") {
+			Some('~')
+		} else {
+			None
+		};
+		let inside_fence = open_fence.is_some();
+		match (fence_char, open_fence) {
+			(Some(found), None) => open_fence = Some(found),
+			(Some(found), Some(open)) if found == open => open_fence = None,
+			_ => {}
+		}
+		if inside_fence || fence_char.is_some() {
+			marked.push_str(line);
+		} else {
+			marked.push_str(&REGEX_SPOILER.replace_all(line, format!("{SPOILER_OPEN}${{1}}{SPOILER_CLOSE}")));
+		}
+	}
+	marked
+}
+
+/// Undoes [`mark_spoilers`] for text that must stay literal (code).
+fn restore_spoiler_markers(text: &str) -> String {
+	text.replace(SPOILER_OPEN, ">!").replace(SPOILER_CLOSE, "!<")
+}
+
+/// Appends `text` as plain text, with `r/name` and `u/name` turned into links
+/// unless the text is already inside a link or image.
+fn push_text_with_autolinks<'a>(text: &str, inside_link: bool, events: &mut Vec<pulldown_cmark::Event<'a>>) {
+	use pulldown_cmark::{CowStr, Event};
+
+	if inside_link {
+		events.push(Event::Text(CowStr::from(text.to_string())));
+		return;
+	}
+	let mut unlinked_start = 0;
+	for link in REGEX_SUBREDDIT_OR_USER.captures_iter(text) {
+		let (whole, prefix, slash, kind, name) = (&link[0], &link[1], &link[2], &link[3], &link[4]);
+		let match_start = link.get(0).map_or(0, |m| m.start());
+		events.push(Event::Text(CowStr::from(format!("{}{prefix}", &text[unlinked_start..match_start]))));
+		events.push(Event::Html(CowStr::from(format!("<a href=\"/{kind}/{name}\">{slash}{kind}/{name}</a>"))));
+		unlinked_start = match_start + whole.len();
+	}
+	events.push(Event::Text(CowStr::from(text[unlinked_start..].to_string())));
+}
+
+/// Turns accumulated text into events: literal inside code blocks, otherwise
+/// spoiler spans and autolinks.
+fn flush_text<'a>(text: &mut String, inside_code_block: bool, inside_link: bool, events: &mut Vec<pulldown_cmark::Event<'a>>) {
+	use pulldown_cmark::{CowStr, Event};
+
+	if text.is_empty() {
+		return;
+	}
+	if inside_code_block {
+		events.push(Event::Text(CowStr::from(restore_spoiler_markers(text))));
+	} else {
+		for piece in text.split_inclusive([SPOILER_OPEN, SPOILER_CLOSE]) {
+			let (plain, marker) = match piece.chars().last() {
+				Some(last @ (SPOILER_OPEN | SPOILER_CLOSE)) => (&piece[..piece.len() - last.len_utf8()], Some(last)),
+				_ => (piece, None),
+			};
+			push_text_with_autolinks(plain, inside_link, events);
+			match marker {
+				Some(SPOILER_OPEN) => events.push(Event::Html(CowStr::Borrowed("<span class=\"md-spoiler-text\">"))),
+				Some(_) => events.push(Event::Html(CowStr::Borrowed("</span>"))),
+				None => {}
+			}
+		}
+	}
+	text.clear();
+}
+
+/// Renders a post body from its markdown source. Used for posts with code
+/// fences, which Reddit's own `selftext_html` does not render.
+///
+/// Raw HTML in the source is shown as text, never emitted: the output goes into
+/// the page unescaped. Reddit-only syntax that `pulldown_cmark` lacks is added
+/// back: `>!spoilers!<` and `r/`/`u/` links. The `md` wrapper matches Reddit's
+/// markup so the stylesheet's `.md` rules apply.
+pub fn render_markdown_body(selftext: &str) -> String {
+	use pulldown_cmark::{Event, Tag, TagEnd};
+
+	let marked = mark_spoilers(&selftext.replace([SPOILER_OPEN, SPOILER_CLOSE], ""));
+	let mut events = Vec::new();
+	let mut pending_text = String::new();
+	let mut inside_code_block = false;
+	let mut link_depth = 0;
+
+	// pulldown_cmark splits text at punctuation, so adjacent text (and raw HTML, treated as text) is
+	// merged before looking for spoilers and autolinks.
+	for event in pulldown_cmark::Parser::new(&marked) {
+		match event {
+			Event::Text(text) | Event::Html(text) | Event::InlineHtml(text) => pending_text.push_str(&text),
+			other => {
+				flush_text(&mut pending_text, inside_code_block, link_depth > 0, &mut events);
+				match &other {
+					Event::Start(Tag::CodeBlock(_)) => inside_code_block = true,
+					Event::End(TagEnd::CodeBlock) => inside_code_block = false,
+					Event::Start(Tag::Link { .. } | Tag::Image { .. }) => link_depth += 1,
+					Event::End(TagEnd::Link | TagEnd::Image) => link_depth -= 1,
+					_ => {}
+				}
+				events.push(match other {
+					Event::Code(code) => Event::Code(restore_spoiler_markers(&code).into()),
+					other => other,
+				});
+			}
+		}
+	}
+	flush_text(&mut pending_text, inside_code_block, link_depth > 0, &mut events);
+
+	let mut html = String::from("<div class=\"md\">");
+	pulldown_cmark::html::push_html(&mut html, events.into_iter());
+	html.push_str("</div>");
+	html
+}
+
 /// Creates a [`Post`] from a provided JSON.
 pub async fn parse_post(post: &Value) -> Post {
 	// Grab UTC time as unix timestamp
@@ -811,10 +987,7 @@ pub async fn parse_post(post: &Value) -> Post {
 	} else {
 		let selftext = val(post, "selftext");
 		if selftext.contains("```") {
-			let mut html_output = String::new();
-			let parser = pulldown_cmark::Parser::new(&selftext);
-			pulldown_cmark::html::push_html(&mut html_output, parser);
-			rewrite_urls(&html_output)
+			rewrite_urls(&render_markdown_body(&selftext))
 		} else {
 			rewrite_urls(&val(post, "selftext_html"))
 		}
@@ -907,6 +1080,11 @@ pub fn param(path: &str, value: &str) -> Option<String> {
 
 /// Retrieve the value of a setting by name
 pub fn setting(req: &Request<Body>, name: &str) -> String {
+	// An SFW-only instance ignores the visitor's (and the config default's) wish to see NSFW posts.
+	if name == "show_nsfw" && sfw_only() {
+		return "off".to_string();
+	}
+
 	// Parse a cookie value from request
 
 	// If this was called with "subscriptions" and the "subscriptions" cookie has a value
@@ -1301,12 +1479,28 @@ pub fn template(t: &impl Template) -> Response<Body> {
 		.unwrap_or_default()
 }
 
+/// Returns `path` when it is a same-site path, otherwise `/`. A single leading
+/// `/` is required: `//host` and `/\host` are read by browsers as another host,
+/// and control characters would split the `Location` header.
+pub fn sanitize_redirect_path(path: &str) -> String {
+	let is_same_site_path = path.starts_with('/') && !path.starts_with("//") && !path.starts_with("/\\") && !path.chars().any(char::is_control);
+	if is_same_site_path {
+		path.to_string()
+	} else {
+		"/".to_string()
+	}
+}
+
+/// Redirects to a same-site path. Every caller goes through
+/// [`sanitize_redirect_path`], so user-supplied targets cannot leave the site.
 pub fn redirect(path: &str) -> Response<Body> {
+	let path = sanitize_redirect_path(path);
+	let escaped_path = htmlescape::encode_attribute(&path);
 	Response::builder()
 		.status(302)
 		.header("content-type", "text/html")
 		.header("Location", path)
-		.body(format!("Redirecting to <a href=\"{path}\">{path}</a>...").into())
+		.body(format!("Redirecting to <a href=\"{escaped_path}\">{escaped_path}</a>...").into())
 		.unwrap_or_default()
 }
 
@@ -1337,6 +1531,19 @@ pub async fn info(req: Request<Body>, msg: &str) -> Result<Response<Body>, Strin
 	.unwrap_or_default();
 
 	Ok(Response::builder().status(200).header("content-type", "text/html").body(body.into()).unwrap_or_default())
+}
+
+/// Resolves the metadata lookup that decides whether a page is NSFW. Outside
+/// SFW-only mode a failed lookup falls back to the default (not NSFW).
+///
+/// An SFW-only instance must not guess: a default of "not NSFW" would let an
+/// NSFW community or user through, so the error is passed on.
+pub fn gating_metadata<T: Default>(lookup: Result<T, String>, sfw_only: bool) -> Result<T, String> {
+	if sfw_only {
+		lookup
+	} else {
+		Ok(lookup.unwrap_or_default())
+	}
 }
 
 /// Returns true if the config/env variable `REDLIB_SFW_ONLY` carries the
@@ -1445,7 +1652,142 @@ pub fn to_absolute_url(relative_path: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-	use super::{deflate_compress, deflate_decompress, format_num, format_url, render_bullet_lists, rewrite_emotes, rewrite_urls, url_path_basename, Post, Preferences};
+	use super::{
+		deflate_compress, deflate_decompress_limited, format_num, format_url, gating_metadata, read_body_limited, redirect, render_bullet_lists, rewrite_emotes, rewrite_urls,
+		should_be_nsfw_gated, url_path_basename, Post, Preferences,
+	};
+	use hyper::{Body, Request};
+	use sealed_test::prelude::*;
+
+	#[test]
+	fn redirect_safety_rejects_offsite_targets() {
+		for target in ["//evil.com", "/\\evil.com", "https://evil.com", "evil.com", "/ok\r\nSet-Cookie: x=1", "", "///evil.com"] {
+			let response = redirect(target);
+			assert_eq!(response.headers()["Location"], "/", "{target:?} must not be followed");
+		}
+		assert_eq!(redirect("/r/rust?x=1&y=2").headers()["Location"], "/r/rust?x=1&y=2");
+		assert_eq!(redirect("/").headers()["Location"], "/");
+	}
+
+	#[tokio::test]
+	async fn redirect_safety_escapes_fallback_body() {
+		let response = redirect("/\"><script>alert(1)</script>");
+		let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+		let body = std::str::from_utf8(&body).unwrap();
+		assert!(!body.contains("<script>"), "fallback body must be escaped: {body}");
+	}
+
+	async fn parsed_body(selftext: &str) -> String {
+		super::parse_post(&serde_json::json!({ "data": { "selftext": selftext, "selftext_html": "<div class=\"md\"><p>reddit html</p></div>" } }))
+			.await
+			.body
+	}
+
+	#[tokio::test]
+	async fn parse_post_code_fence_escapes_raw_html() {
+		let body =
+			parsed_body("```\ncode\n```\n\n<meta http-equiv=\"refresh\" content=\"0;url=//evil.com\">\n\ntext <style>body{display:none}</style> <b onclick=x>bold</b>").await;
+		assert!(!body.contains("<meta"), "raw meta tag survived: {body}");
+		assert!(!body.contains("<style"), "raw style tag survived: {body}");
+		assert!(!body.contains("<b onclick"), "raw inline tag survived: {body}");
+		assert!(body.contains("&lt;meta http-equiv"), "html should be shown as text: {body}");
+		assert!(body.contains("<pre><code>code\n</code></pre>"), "the code block itself must still render: {body}");
+	}
+
+	#[tokio::test]
+	async fn parse_post_code_fence_keeps_spoilers_and_autolinks() {
+		let body =
+			parsed_body(">!whole line spoiler!<\n\nmid-line >!hidden *bold* text!< and r/rust, /u/spez or u/ab_c.\n\n```\nr/rust >!not a spoiler!<\n```\n\n`u/inline >!code!<`")
+				.await;
+		assert!(body.starts_with("<div class=\"md\">"), "spoiler css needs a .md ancestor: {body}");
+		assert!(body.contains("<span class=\"md-spoiler-text\">whole line spoiler</span>"), "{body}");
+		assert!(body.contains("<span class=\"md-spoiler-text\">hidden <em>bold</em> text</span>"), "{body}");
+		assert!(body.contains("<a href=\"/r/rust\">r/rust</a>"), "{body}");
+		assert!(body.contains("<a href=\"/u/spez\">/u/spez</a>"), "{body}");
+		assert!(body.contains("<a href=\"/u/ab_c\">u/ab_c</a>"), "{body}");
+		assert!(body.contains("<pre><code>r/rust &gt;!not a spoiler!&lt;\n</code></pre>"), "code fences are literal: {body}");
+		assert!(body.contains("<code>u/inline &gt;!code!&lt;</code>"), "inline code is literal: {body}");
+	}
+
+	#[tokio::test]
+	async fn parse_post_code_fence_keeps_ordinary_block_quotes() {
+		let body = parsed_body("```\ncode\n```\n\n> quoted text\n").await;
+		assert!(body.contains("<blockquote>"), "{body}");
+		assert!(!body.contains("md-spoiler-text"), "{body}");
+	}
+
+	#[tokio::test]
+	async fn parse_post_without_code_fence_uses_reddit_html() {
+		assert_eq!(parsed_body("plain text").await, "<div class=\"md\"><p>reddit html</p></div>");
+	}
+
+	const TEST_DECOMPRESSED_LIMIT: u64 = 1024 * 1024;
+
+	#[test]
+	fn dos_and_shortlink_limits_deflate_output_is_capped() {
+		let bomb = deflate_compress(vec![0; 2 * 1024 * 1024]).unwrap();
+		assert!(bomb.len() < 10_000, "the fixture should be a small payload that expands: {} bytes", bomb.len());
+		let error = deflate_decompress_limited(bomb, 1024 * 1024).unwrap_err();
+		assert!(error.contains("exceeds"), "{error}");
+
+		let at_limit = deflate_compress(vec![7; 1024]).unwrap();
+		assert_eq!(deflate_decompress_limited(at_limit.clone(), 1024).unwrap().len(), 1024);
+		assert!(deflate_decompress_limited(at_limit, 1023).is_err());
+	}
+
+	#[tokio::test]
+	async fn dos_and_shortlink_limits_body_reader_stops_at_the_cap() {
+		let body = || Body::wrap_stream(futures_lite::stream::iter((0..10).map(|_| Ok::<_, std::io::Error>(vec![b'a'; 100]))));
+		assert_eq!(read_body_limited(body(), 1000).await.unwrap().len(), 1000);
+		assert!(read_body_limited(body(), 999).await.unwrap_err().contains("too large"));
+	}
+
+	fn listing_fixture() -> serde_json::Value {
+		serde_json::json!({ "data": { "after": "t3_next", "children": [
+			{ "data": { "id": "nsfw1", "title": "adult", "over_18": true } },
+			{ "data": { "id": "safe1", "title": "family", "over_18": false } },
+		] } })
+	}
+
+	fn request_with_cookie(cookie: &str) -> Request<Body> {
+		Request::get("/r/all").header("Cookie", cookie).body(Body::empty()).unwrap()
+	}
+
+	#[tokio::test]
+	async fn sfw_only_enforcement_keeps_posts_when_instance_allows_nsfw() {
+		let (posts, after) = Post::from_listing(&listing_fixture()).await.unwrap();
+		assert_eq!(posts.iter().map(|post| post.id.as_str()).collect::<Vec<_>>(), ["nsfw1", "safe1"]);
+		assert_eq!(after, "t3_next");
+	}
+
+	#[tokio::test]
+	#[sealed_test(env = [("REDLIB_SFW_ONLY", "on")])]
+	async fn sfw_only_enforcement_drops_nsfw_listing_posts() {
+		let (posts, _) = Post::from_listing(&listing_fixture()).await.unwrap();
+		assert_eq!(posts.iter().map(|post| post.id.as_str()).collect::<Vec<_>>(), ["safe1"]);
+	}
+
+	#[test]
+	#[sealed_test(env = [("REDLIB_SFW_ONLY", "on")])]
+	fn sfw_only_enforcement_ignores_show_nsfw_cookie() {
+		let req = request_with_cookie("show_nsfw=on");
+		assert_eq!(Preferences::new(&req).show_nsfw, "off");
+		assert!(should_be_nsfw_gated(&req, "/r/all"));
+	}
+
+	#[test]
+	fn sfw_only_enforcement_honours_show_nsfw_cookie_when_instance_allows_it() {
+		let req = request_with_cookie("show_nsfw=on");
+		assert_eq!(Preferences::new(&req).show_nsfw, "on");
+		assert!(!should_be_nsfw_gated(&req, "/r/all"));
+	}
+
+	#[test]
+	fn sfw_only_enforcement_fails_closed_on_metadata_error() {
+		assert_eq!(gating_metadata::<String>(Err("down".to_string()), true), Err("down".to_string()));
+		assert_eq!(gating_metadata::<String>(Err("down".to_string()), false), Ok(String::new()));
+		assert_eq!(gating_metadata(Ok("sub".to_string()), true), Ok("sub".to_string()));
+	}
 
 	#[test]
 	fn format_num_works() {
@@ -1669,7 +2011,7 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 	fn test_known_good_configs_deserialization() {
 		for config in KNOWN_GOOD_CONFIGS {
 			let bytes = base2048::decode(config).unwrap();
-			let decompressed = deflate_decompress(bytes).unwrap();
+			let decompressed = deflate_decompress_limited(bytes, TEST_DECOMPRESSED_LIMIT).unwrap();
 			assert!(bincode::deserialize::<Preferences>(&decompressed).is_ok());
 		}
 	}
@@ -1678,7 +2020,7 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 	fn test_known_good_configs_full_round_trip() {
 		for config in KNOWN_GOOD_CONFIGS {
 			let bytes = base2048::decode(config).unwrap();
-			let decompressed = deflate_decompress(bytes).unwrap();
+			let decompressed = deflate_decompress_limited(bytes, TEST_DECOMPRESSED_LIMIT).unwrap();
 			let prefs: Preferences = bincode::deserialize(&decompressed).unwrap();
 			test_round_trip(&prefs, false);
 			test_round_trip(&prefs, true);
@@ -1688,7 +2030,11 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 	fn test_round_trip(input: &Preferences, compression: bool) {
 		let serialized = bincode::serialize(input).unwrap();
 		let compressed = if compression { deflate_compress(serialized).unwrap() } else { serialized };
-		let decompressed = if compression { deflate_decompress(compressed).unwrap() } else { compressed };
+		let decompressed = if compression {
+			deflate_decompress_limited(compressed, TEST_DECOMPRESSED_LIMIT).unwrap()
+		} else {
+			compressed
+		};
 		let deserialized: Preferences = bincode::deserialize(&decompressed).unwrap();
 		assert_eq!(*input, deserialized);
 	}

@@ -1,8 +1,8 @@
 #![allow(clippy::cmp_owned)]
 
 use crate::utils::{
-	catch_random, error, filter_posts, format_num, format_url, get_filters, info, nsfw_landing, param, redirect, rewrite_urls, setting, template, to_absolute_url, val, Post,
-	Preferences, Subreddit,
+	catch_random, error, filter_posts, format_num, format_url, gating_metadata, get_filters, info, nsfw_landing, param, redirect, rewrite_urls, setting, sfw_only, template,
+	to_absolute_url, val, Post, Preferences, Subreddit,
 };
 use crate::{client::json, server::RequestExt, server::ResponseExt};
 use crate::{config, utils};
@@ -107,22 +107,26 @@ pub async fn community(req: Request<Body>) -> Result<Response<Body>, String> {
 	}
 
 	// Request subreddit metadata
-	let sub = if !sub_name.contains('+') && sub_name != subscribed && sub_name != "popular" && sub_name != "all" {
+	let metadata = if !sub_name.contains('+') && sub_name != subscribed && sub_name != "popular" && sub_name != "all" {
 		// Regular subreddit
-		subreddit(&sub_name, quarantined).await.unwrap_or_default()
+		subreddit(&sub_name, quarantined).await
 	} else if sub_name == subscribed {
 		// Subscription feed
 		if req.uri().path().starts_with("/r/") {
-			subreddit(&sub_name, quarantined).await.unwrap_or_default()
+			subreddit(&sub_name, quarantined).await
 		} else {
-			Subreddit::default()
+			Ok(Subreddit::default())
 		}
 	} else {
 		// Multireddit, all, popular
-		Subreddit {
+		Ok(Subreddit {
 			name: sub_name.clone(),
 			..Subreddit::default()
-		}
+		})
+	};
+	let sub = match gating_metadata(metadata, sfw_only()) {
+		Ok(sub) => sub,
+		Err(msg) => return upstream_error_page(req, sub_name, &msg).await,
 	};
 
 	let req_url = req.uri().to_string();
@@ -185,13 +189,18 @@ pub async fn community(req: Request<Body>) -> Result<Response<Body>, String> {
 					no_posts,
 				}))
 			}
-			Err(msg) => match msg.as_str() {
-				"quarantined" | "gated" => Ok(quarantine(&req, sub_name, &msg)),
-				"private" => error(req, &format!("r/{sub_name} is a private community")).await,
-				"banned" => error(req, &format!("r/{sub_name} has been banned from Reddit")).await,
-				_ => error(req, &msg).await,
-			},
+			Err(msg) => upstream_error_page(req, sub_name, &msg).await,
 		}
+	}
+}
+
+/// Renders the page for a failed subreddit lookup or listing fetch.
+async fn upstream_error_page(req: Request<Body>, sub_name: String, msg: &str) -> Result<Response<Body>, String> {
+	match msg {
+		"quarantined" | "gated" => Ok(quarantine(&req, sub_name, msg)),
+		"private" => error(req, &format!("r/{sub_name} is a private community")).await,
+		"banned" => error(req, &format!("r/{sub_name} has been banned from Reddit")).await,
+		_ => error(req, msg).await,
 	}
 }
 
@@ -263,6 +272,15 @@ pub fn join_until_size_limit<T: std::fmt::Display>(vec: &[T]) -> Vec<std::string
 
 	// Return resulting vector
 	result
+}
+
+/// Where to send the visitor after a subscribe/filter action: the optional
+/// `redirect` query parameter, or the subreddit itself.
+fn subscription_redirect_path(query: &str, sub: &str) -> String {
+	match param(&format!("?{query}"), "redirect") {
+		Some(redirect_path) => format!("/{redirect_path}"),
+		None => format!("/r/{sub}"),
+	}
 }
 
 // Sub, filter, unfilter, or unsub by setting subscription cookie using response "Set-Cookie" header
@@ -349,13 +367,7 @@ pub async fn subscriptions_filters(req: Request<Body>) -> Result<Response<Body>,
 
 	// Redirect back to subreddit
 	// check for redirect parameter if unsubscribing/unfiltering from outside sidebar
-	let path = if let Some(redirect_path) = param(&format!("?{query}"), "redirect") {
-		format!("/{redirect_path}")
-	} else {
-		format!("/r/{sub}")
-	};
-
-	let mut response = redirect(&path);
+	let mut response = redirect(&subscription_redirect_path(&query, &sub));
 
 	// If sub_list is empty remove all subscriptions cookies, otherwise update them and remove old ones
 	if sub_list.is_empty() {
@@ -612,6 +624,9 @@ pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
 
 	// Get subreddit data
 	let subreddit = subreddit(&sub, false).await?;
+	if subreddit.nsfw && sfw_only() {
+		return Ok(error(req, "RSS is unavailable for NSFW communities on this instance.").await.unwrap_or_default());
+	}
 
 	// Get posts
 	let (posts, _) = Post::fetch(&path, false).await?;
@@ -708,6 +723,29 @@ fn get_mime_type(url: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use route_recognizer::Params;
+
+	#[test]
+	fn redirect_safety_subscription_target() {
+		let followed = |query: &str| redirect(&subscription_redirect_path(query, "rust")).headers()["Location"].to_str().unwrap().to_string();
+		// `redirect=/evil.com` is formatted as `//evil.com`, which browsers treat as another host.
+		assert_eq!(followed("redirect=/evil.com"), "/");
+		assert_eq!(followed("redirect=//evil.com"), "/");
+		assert_eq!(followed("redirect=r/rust%3Fsort%3Dnew"), "/r/rust?sort=new");
+		assert_eq!(followed(""), "/r/rust");
+	}
+
+	#[tokio::test]
+	async fn redirect_safety_quarantine_exception() {
+		let mut req = Request::post("/r/edgy?redir=https://evil.com").body(Body::empty()).unwrap();
+		let mut params = Params::new();
+		params.insert("sub".to_string(), "edgy".to_string());
+		req.set_params(params);
+
+		let response = add_quarantine_exception(req).await.unwrap();
+		assert_eq!(response.headers()["Location"], "/");
+		assert!(response.headers()["Set-Cookie"].to_str().unwrap().starts_with("allow_quaran_edgy=true"));
+	}
 
 	#[tokio::test(flavor = "multi_thread")]
 	#[ignore = "requires live Reddit"]
