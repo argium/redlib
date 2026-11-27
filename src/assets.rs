@@ -3,6 +3,7 @@
 //! for good: a changed script gets a new URL.
 
 use crate::server::StaticBody;
+use crate::utils::ThemeAssets;
 use hyper::{Body, Request, Response};
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -46,6 +47,16 @@ static SCRIPTS: LazyLock<HashMap<&'static str, Script>> = LazyLock::new(|| {
 	.collect()
 });
 
+/// `style.css` followed by every theme, as served at `/style.css`.
+pub fn stylesheet() -> String {
+	let mut css = include_str!("../static/style.css").to_string();
+	for file in ThemeAssets::iter() {
+		css.push('\n');
+		css.push_str(std::str::from_utf8(&ThemeAssets::get(file.as_ref()).unwrap().data).unwrap());
+	}
+	css
+}
+
 /// Builds every script's compressed form now, instead of during the first request that needs it.
 pub fn warm() {
 	LazyLock::force(&SCRIPTS);
@@ -84,5 +95,12 @@ mod tests {
 			assert!(!version(name).is_empty(), "{name} needs a version for its template link");
 		}
 		assert_eq!(version("missing.js"), "");
+	}
+
+	#[test]
+	fn theme_contrast_every_served_theme_is_readable_and_declares_its_color_scheme() {
+		let themes: Vec<String> = ThemeAssets::iter().map(|file| file.trim_end_matches(".css").to_string()).collect();
+		assert!(themes.len() > 1, "the themes were not found");
+		crate::css_checks::assert_themes_accessible(&stylesheet(), &themes);
 	}
 }

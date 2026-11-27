@@ -1,6 +1,6 @@
 /* Dracula theme setting */
 .dracula {
-	--accent: #bd93f9;
+	--accent: #c19af9;
 	--green: #50fa7b;
 	--text: #f8f8f2;
 	--foreground: #3d4051;
@@ -9,6 +9,12 @@
 	--post: #333544;
 	--panel-border: 2px solid #44475a;
 	--highlighted: #4e5267;
-	--visited: #969692;
+	--visited: #bdbebe;
+	--muted: #adaeae;
 	--shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+html:has(> .dracula) {
+	/* Scrollbars and native controls follow the theme, not the OS scheme */
+	color-scheme: dark;
 }

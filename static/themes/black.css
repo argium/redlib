@@ -1,6 +1,6 @@
 /* Black theme setting */
 .black {
-	--accent: #bb2b3b;
+	--accent: #d64b5a;
 	--green: #00a229;
 	--text: white;
 	--foreground: #0f0f0f;
@@ -10,5 +10,11 @@
 	--panel-border: 2px solid #0f0f0f;
 	--highlighted: #0f0f0f;
 	--visited: #aaa;
+	--muted: #999999;
 	--shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+html:has(> .black) {
+	/* Scrollbars and native controls follow the theme, not the OS scheme */
+	color-scheme: dark;
 }

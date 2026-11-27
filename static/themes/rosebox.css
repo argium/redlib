@@ -1,6 +1,6 @@
 /* Rosebox theme setting */
 .rosebox {
-	--accent: #a57562;
+	--accent: #ae8372;
 	--green: #a3be8c;
 	--text: white;
 	--foreground: #222;
@@ -9,5 +9,12 @@
 	--post: #222;
 	--panel-border: 1px solid #222;
 	--highlighted: #262626;
+	--visited: #bdbdbd;
+	--muted: #a8a8a8;
 	--shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+html:has(> .rosebox) {
+	/* Scrollbars and native controls follow the theme, not the OS scheme */
+	color-scheme: dark;
 }

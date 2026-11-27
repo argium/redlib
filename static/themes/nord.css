@@ -1,6 +1,6 @@
 /* Nord theme setting */
 .nord {
-	--accent: #8fbcbb; 
+	--accent: #9cc4c3; 
 	--green: #a3be8c;
 	--text: #eceff4;
 	--foreground: #3b4252;
@@ -9,6 +9,12 @@
 	--post: #434c5e;
 	--panel-border: 2px solid #4c566a;
 	--highlighted: #3b4252;
-	--visited: #a3a5aa;
+	--visited: #b9bec7;
+	--muted: #b9bdc3;
 	--shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+html:has(> .nord) {
+	/* Scrollbars and native controls follow the theme, not the OS scheme */
+	color-scheme: dark;
 }

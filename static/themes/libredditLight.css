@@ -1,6 +1,6 @@
 /* Libreddit light theme setting */
 .libredditLight {
-	--accent: #009a9a;
+	--accent: #006c6c;
 	--green: #00a229;
 	--text: black;
 	--foreground: #f5f5f5;
@@ -10,6 +10,7 @@
 	--panel-border: 1px solid #ccc;
 	--highlighted: white;
 	--visited: #555;
+	--muted: #585858;
 	--shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
 
