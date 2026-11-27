@@ -42,7 +42,7 @@ pub async fn profile(req: Request<Body>) -> Result<Response<Body>, String> {
 		req.uri().query().unwrap_or_default(),
 	);
 	let url = String::from(req.uri().path_and_query().map_or("", |val| val.as_str()));
-	let redirect_url = url[1..].replace('?', "%3F").replace('&', "%26");
+	let redirect_url = url[1..].to_string();
 
 	// Retrieve other variables from Redlib request
 	let sort = param(&path, "sort").unwrap_or_default();

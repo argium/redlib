@@ -633,8 +633,8 @@ pub struct Params {
 
 /// Every export starts with this and a version byte, so a later change to `Preferences` can still read
 /// exports saved by older releases: bump [`EXPORT_VERSION`] and decode the old layout into its own struct.
-/// Exports from before versioning are bare bincode, which starts with the 8-byte length of `theme`. Its
-/// second byte is always zero, so it can never start with this header.
+/// Exports from before versioning are bare bincode, which starts with the 8-byte little-endian length of
+/// `theme`. Matching this header would need a theme name of about 19.5 KB, which no real export has.
 const EXPORT_MAGIC: &[u8] = b"RLP";
 const EXPORT_VERSION: u8 = 2;
 

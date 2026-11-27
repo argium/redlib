@@ -249,6 +249,10 @@ mod tests {
 	const AWKWARD_QUERY_ENCODED: &str = "C%2B%2B%20%26%20AT%26T%20%231%20100%25%20%22x%22";
 
 	fn render_search(q: &str, typed: &str) -> String {
+		search_template(q, typed).render().unwrap()
+	}
+
+	fn search_template(q: &str, typed: &str) -> SearchTemplate {
 		SearchTemplate {
 			posts: Vec::new(),
 			subreddits: vec![Subreddit {
@@ -275,8 +279,6 @@ mod tests {
 			all_posts_hidden_nsfw: false,
 			no_posts: true,
 		}
-		.render()
-		.unwrap()
 	}
 
 	#[test]
@@ -286,6 +288,26 @@ mod tests {
 			format!("/subreddits/search.json?q={AWKWARD_QUERY_ENCODED}&limit=3")
 		);
 		assert_eq!(subreddit_search_path("rust", "sr_user"), "/subreddits/search.json?q=rust&limit=50");
+	}
+
+	#[test]
+	fn search_encoding_and_comments_pagination_cursors_are_encoded() {
+		let html = SearchTemplate {
+			params: SearchParams {
+				q: "rust".to_string(),
+				sort: "relevance".to_string(),
+				t: "all".to_string(),
+				before: "t3_a&q=evil".to_string(),
+				after: "t3_b#x".to_string(),
+				restrict_sr: "on".to_string(),
+				typed: "all".to_string(),
+			},
+			..search_template("rust", "all")
+		}
+		.render()
+		.unwrap();
+		assert!(html.contains("&before=t3_a%26q%3Devil\""), "PREV cursor must stay one parameter");
+		assert!(html.contains("&after=t3_b%23x\""), "NEXT cursor must not start a fragment");
 	}
 
 	#[test]

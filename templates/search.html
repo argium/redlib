@@ -113,13 +113,13 @@
 			{% if params.before != "" %}
 			<a href="?q={{ params.q|urlencode_strict }}&restrict_sr={{ params.restrict_sr|urlencode_strict }}
 				&sort={{ params.sort|urlencode_strict }}&t={{ params.t|urlencode_strict }}
-				&before={{ params.before }}" accesskey="P">PREV</a>
+				&before={{ params.before|urlencode_strict }}" accesskey="P">PREV</a>
 			{% endif %}
 
 			{% if params.after != "" %}
 			<a href="?q={{ params.q|urlencode_strict }}&restrict_sr={{ params.restrict_sr|urlencode_strict }}
 				&sort={{ params.sort|urlencode_strict }}&t={{ params.t|urlencode_strict }}
-				&after={{ params.after }}" accesskey="N">NEXT</a>
+				&after={{ params.after|urlencode_strict }}" accesskey="N">NEXT</a>
 			{% endif %}
 		</footer>
 		{% endif %}

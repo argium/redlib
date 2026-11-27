@@ -146,7 +146,7 @@ pub async fn community(req: Request<Body>) -> Result<Response<Body>, String> {
 
 	let path = format!("/r/{}/{sort}.json?{}{params}", sub_name.replace('+', "%2B"), req.uri().query().unwrap_or_default());
 	let url = String::from(req.uri().path_and_query().map_or("", |val| val.as_str()));
-	let redirect_url = url[1..].replace('?', "%3F").replace('&', "%26").replace('+', "%2B");
+	let redirect_url = url[1..].to_string();
 	let filters = get_filters(&req);
 
 	// If all requested subs are filtered, we don't need to fetch posts.
@@ -738,8 +738,15 @@ mod tests {
 	}
 
 	fn rendered_listing_of(posts: Vec<Post>, use_hls: &str) -> String {
+		rendered_page(posts, use_hls, "/r/test")
+	}
+
+	fn rendered_page(posts: Vec<Post>, use_hls: &str, url: &str) -> String {
 		SubredditTemplate {
-			sub: Subreddit::default(),
+			sub: Subreddit {
+				name: "rust".to_string(),
+				..Subreddit::default()
+			},
 			posts,
 			sort: ("hot".to_string(), "".to_string()),
 			ends: (String::new(), String::new()),
@@ -747,8 +754,8 @@ mod tests {
 				use_hls: use_hls.to_string(),
 				..Preferences::default()
 			},
-			url: "/r/test".to_string(),
-			redirect_url: "/r/test".to_string(),
+			url: url.to_string(),
+			redirect_url: url[1..].to_string(),
 			is_filtered: false,
 			all_posts_filtered: false,
 			all_posts_hidden_nsfw: false,
@@ -756,6 +763,30 @@ mod tests {
 		}
 		.render()
 		.unwrap()
+	}
+
+	/// The `redirect=` value of every link or form in `html`, decoded the way the handlers decode it.
+	fn redirect_targets(html: &str) -> Vec<String> {
+		html
+			.split("redirect=")
+			.skip(1)
+			.map(|rest| {
+				let value = &rest[..rest.find('"').unwrap()];
+				url::form_urlencoded::parse(format!("redirect={value}").as_bytes()).next().unwrap().1.into_owned()
+			})
+			.collect()
+	}
+
+	#[tokio::test]
+	async fn return_links_bring_the_visitor_back_to_the_exact_page() {
+		let page = "/r/rust/top?t=week&after=t3_a+b%25&q=c%23";
+		let html = rendered_page(vec![post_fixture(true).await], "off", page);
+		let targets = redirect_targets(&html);
+		assert!(targets.len() >= 3, "subscribe/filter forms and the HLS notice links: {targets:?}");
+		for target in targets {
+			let back = format!("/{}", target.trim_start_matches('/'));
+			assert!(back == page || back.starts_with(&format!("{page}#")), "{back} should return to {page}");
+		}
 	}
 
 	#[tokio::test]

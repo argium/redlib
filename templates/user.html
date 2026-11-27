@@ -127,14 +127,14 @@ body %}
                 <div id="user_subscription">
                     {% if prefs.subscriptions.contains(name) %}
                     <form
-                        action="/r/{{ name }}/unsubscribe?redirect={{ redirect_url }}"
+                        action="/r/{{ name }}/unsubscribe?redirect={{ redirect_url|urlencode_strict }}"
                         method="POST"
                     >
                         <button class="unsubscribe">Unfollow</button>
                     </form>
                     {% else %}
                     <form
-                        action="/r/{{ name }}/subscribe?redirect={{ redirect_url }}"
+                        action="/r/{{ name }}/subscribe?redirect={{ redirect_url|urlencode_strict }}"
                         method="POST"
                     >
                         <button class="subscribe">Follow</button>
@@ -144,14 +144,14 @@ body %}
                 <div id="user_filter">
                     {% if prefs.filters.contains(name) %}
                     <form
-                        action="/r/{{ name }}/unfilter?redirect={{ redirect_url }}"
+                        action="/r/{{ name }}/unfilter?redirect={{ redirect_url|urlencode_strict }}"
                         method="POST"
                     >
                         <button class="unfilter">Unfilter</button>
                     </form>
                     {% else %}
                     <form
-                        action="/r/{{ name }}/filter?redirect={{ redirect_url }}"
+                        action="/r/{{ name }}/filter?redirect={{ redirect_url|urlencode_strict }}"
                         method="POST"
                     >
                         <button class="filter">Filter</button>

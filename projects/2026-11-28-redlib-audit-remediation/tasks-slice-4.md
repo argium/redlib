@@ -455,3 +455,15 @@ Slice 4 implemented on 2026-11-28 against baseline `d3b4b58` (Slice 3 head).
 - `redirect_url` in `subreddit.rs` and `user.rs` (built with `replace`) and the comment-search query parsing in `post::item` (`COMMENT_SEARCH_CAPTURE`, `%20` and `+` only) were not in this finding's list and are unchanged. A `%26` or `%2B` already in the page URL still reaches those redirect links decoded.
 - The settings page's export box and the browser's use of it were not exercised in a browser.
 - No browser check of the encoded links; they were verified by round trips through the real handlers (`add_quarantine_exception`, `settings::update`) instead.
+
+### Review
+
+An adversarial reviewer read commits `d3b4b58..853bf97`. No Critical or Important findings.
+
+| Finding | Disposition | Regression test |
+| --- | --- | --- |
+| Subscribe/filter forms and the HLS notice hand-encoded their `redirect=` value (`?`, `&`, sometimes `+`), so a page URL containing `%` or `#` returned the visitor somewhere else | Fixed: handlers pass the raw path and templates apply `urlencode_strict` | `return_links_bring_the_visitor_back_to_the_exact_page` |
+| Search PREV/NEXT links put `before`/`after` cursors in the URL unencoded, so a crafted cursor could add parameters | Fixed: `urlencode_strict` on both | `search_encoding_and_comments_pagination_cursors_are_encoded` |
+| The `EXPORT_MAGIC` comment claimed an old export's second byte is always zero | Fixed: comment now states the ~19.5 KB theme-name bound | None (comment only) |
+
+Accepted, not changed: emote asset names are inserted unescaped as before (Reddit controls them); gallery items without `status: "valid"` are skipped; the round-trip export test customises four fields, and field order is covered by the v1 known-good strings.
