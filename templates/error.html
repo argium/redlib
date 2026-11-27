@@ -4,7 +4,7 @@
 {% block content %}
 <div id="error">
 	<h1>{{ msg }}</h1>
-	<h3><a class="retry" href="{{ url }}">Try again</a></h3>
+	<h3><a class="retry" href="{{ crate::utils::sanitize_redirect_path(url) }}">Try again</a></h3>
 	<br />
 	<h3><a href="https://www.redditstatus.com/">Reddit Status</a></h3>
 	<br />

@@ -1838,10 +1838,10 @@ input[type="submit"] {
     width: 100%;
 }
 
-/* A line of prose past about 70 characters is hard to follow; wide mode would stretch it to ~190 */
-.wide .md,
-.wide .comment_body,
-.wide .post_body {
+/* A line of prose past about 70 characters is hard to follow; wide mode would stretch it to ~190.
+   Code blocks, tables and images keep the full width and scroll inside it. */
+.wide .md > :is(p, ul, ol, blockquote, h1, h2, h3, h4, h5, h6),
+.wide p.comment_body {
     max-width: 70ch;
 }
 

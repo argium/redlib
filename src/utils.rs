@@ -2425,6 +2425,24 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 	}
 
 	#[test]
+	fn ux_templates_and_settings_feedback_retry_link_never_leaves_the_site() {
+		use askama::Template as _;
+		// The server collapses `//` when routing, so these reach the error page with their odd prefix intact.
+		for url in ["//evil.com/x", r"/\evil.com", "https://evil.com/"] {
+			let html = super::ErrorTemplate {
+				msg: "Page not found".to_string(),
+				prefs: Preferences::default(),
+				url: url.to_string(),
+			}
+			.render()
+			.unwrap();
+
+			let retry = html.split("class=\"retry\" href=\"").nth(1).expect("a retry link").split('"').next().unwrap();
+			assert_eq!(retry, "/", "{url} must not become the retry target");
+		}
+	}
+
+	#[test]
 	fn themes_and_sr_labels_theme_names_read_as_words() {
 		for (file_name, label) in [
 			("system", "System"),
