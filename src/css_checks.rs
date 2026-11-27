@@ -114,16 +114,16 @@ fn merged(rules: &[Rule], applies: impl Fn(&Rule) -> bool) -> HashMap<String, St
 	rules.iter().filter(|rule| applies(rule)).flat_map(|rule| rule.declarations.clone()).collect()
 }
 
-fn names_class(rule: &Rule, theme: &str) -> bool {
+fn names_class(theme: &str) -> impl Fn(&Rule) -> bool {
 	let class = Regex::new(&format!(r"(^|[^\w-])\.{theme}([^\w-]|$)")).unwrap();
-	rule.conditions.is_empty() && rule.selectors.iter().any(|selector| class.is_match(selector))
+	move |rule| rule.conditions.is_empty() && rule.selectors.iter().any(|selector| class.is_match(selector))
 }
 
 /// The rule targets the page's root element when the body has the theme's class. The viewport's scrollbars
 /// follow the root element's `color-scheme`; the body's own value only reaches the controls inside it.
-fn styles_root_of(rule: &Rule, theme: &str) -> bool {
+fn styles_root_of(theme: &str) -> impl Fn(&Rule) -> bool {
 	let selector = Regex::new(&format!(r"^html:has\(>\s*\.{theme}\)$")).unwrap();
-	rule.conditions.is_empty() && rule.selectors.iter().any(|candidate| selector.is_match(candidate))
+	move |rule| rule.conditions.is_empty() && rule.selectors.iter().any(|candidate| selector.is_match(candidate))
 }
 
 fn is_root(rule: &Rule) -> bool {
@@ -205,8 +205,8 @@ pub fn assert_themes_accessible(css: &str, themes: &[String]) {
 	}
 
 	for theme in themes {
-		check_tokens(theme, &merged(&rules, |rule| names_class(rule, theme)), &mut problems);
-		check_color_scheme(theme, &merged(&rules, |rule| styles_root_of(rule, theme)), &mut problems);
+		check_tokens(theme, &merged(&rules, names_class(theme)), &mut problems);
+		check_color_scheme(theme, &merged(&rules, styles_root_of(theme)), &mut problems);
 	}
 
 	assert!(problems.is_empty(), "theme accessibility problems:\n{}", problems.join("\n"));
