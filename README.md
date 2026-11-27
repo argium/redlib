@@ -483,3 +483,11 @@ winget install -i LLVM.LLVM
 # For tests.
 winget install GoLang.Go
 ```
+
+### Script tests
+
+The browser scripts in `static/` are tested with Node's built-in test runner, so there are no packages to install (run on Node 26):
+
+```sh
+node --test tests/js/
+```

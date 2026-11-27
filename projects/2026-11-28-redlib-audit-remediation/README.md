@@ -15,7 +15,7 @@ Remediation of the 55 confirmed bugs and medium-to-high value improvements in [r
 
 ## Workflow status
 
-Engineering-led project without a separate `spec.md`; acceptance criteria live in `plan.md` milestones. The plan and its defaults were approved on 2026-11-28. Slice 1 is accepted on `fix/oauth-client-reliability` (see its Acceptance Evidence). Slice 2 is implemented on `fix/security-and-input-hardening`; its evidence is in `tasks-slice-2.md`. Slice 3 is implemented on `perf/server-and-observability`; its evidence is in `tasks-slice-3.md`. Slice 4 is implemented on `fix/domain-feeds-and-search`; its evidence is in `tasks-slice-4.md`.
+Engineering-led project without a separate `spec.md`; acceptance criteria live in `plan.md` milestones. The plan and its defaults were approved on 2026-11-28. Slice 1 is accepted on `fix/oauth-client-reliability` (see its Acceptance Evidence). Slice 2 is implemented on `fix/security-and-input-hardening`; its evidence is in `tasks-slice-2.md`. Slice 3 is implemented on `perf/server-and-observability`; its evidence is in `tasks-slice-3.md`. Slice 4 is implemented on `fix/domain-feeds-and-search`; its evidence is in `tasks-slice-4.md`. Slice 5 is implemented on `fix/frontend-a11y-and-js`; its evidence is in `tasks-slice-5.md`.
 
 ## Artifacts
 
@@ -28,6 +28,7 @@ Engineering-led project without a separate `spec.md`; acceptance criteria live i
 | [tasks-slice-2.md](./tasks-slice-2.md) | Slice 2 executable tasks | Complete |
 | [tasks-slice-3.md](./tasks-slice-3.md) | Slice 3 executable tasks | Complete |
 | [tasks-slice-4.md](./tasks-slice-4.md) | Slice 4 executable tasks | Complete |
+| [tasks-slice-5.md](./tasks-slice-5.md) | Slice 5 executable tasks | Complete |
 
 ## Next action
 
