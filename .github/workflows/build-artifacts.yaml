@@ -40,6 +40,8 @@ jobs:
         run: echo "VERSION=$(cargo metadata --format-version 1 --no-deps | jq .packages[0].version -r | sed 's/^/v/')" >> "$GITHUB_OUTPUT"
 
       - name: Build
+        env:
+          GIT_HASH: ${{ github.sha }}
         run: ./scripts/build-musl-docker.sh "${{ matrix.target }}"
 
       - name: Package release

@@ -42,6 +42,27 @@ jobs:
       - name: Run cargo nextest
         run: cargo nextest run --locked
 
+  msrv:
+    name: cargo check on the minimum supported Rust (1.89)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Keep in step with rust-version in Cargo.toml and the toolchain in flake.nix.
+      - name: Install the minimum supported toolchain
+        uses: dtolnay/rust-toolchain@d92bbbb03544f480ed5c7ba4b54020e4ed2c4f65 # 1.89.0 branch tip
+        with:
+          toolchain: 1.89.0
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Run cargo check
+        run: cargo check --locked --all-targets
+
   scripts:
     name: node --test tests/js
     runs-on: ubuntu-latest
@@ -129,7 +150,7 @@ jobs:
           persist-credentials: false
 
       - name: Build the Alpine image from source
-        run: docker build --file Dockerfile.alpine --tag redlib:pull-request .
+        run: docker build --file Dockerfile.alpine --build-arg "GIT_HASH=${GITHUB_SHA}" --tag redlib:pull-request .
 
       # A static musl binary that starts under Alpine; /healthz needs live Reddit, so it is not probed.
       - name: Run the image
