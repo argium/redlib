@@ -416,7 +416,9 @@ Assign a default value for each instance-specific setting by passing environment
 | `PUSHSHIFT_FRONTEND`      | String          | `undelete.pullpush.io` | Allows the server to set the Pushshift frontend to be used with "removed" links.                          |
 | `PORT`                    | Integer 0-65535 | `8080`                 | The **internal** port Redlib listens on.                                                                  |
 | `ENABLE_RSS`              | `["on", "off"]` | `off`                  | Enables RSS feed generation.                                                                              |
-| `FULL_URL`                | String          | (empty)                | Allows for proper URLs (for now, only needed by RSS)                                                      |
+| `FULL_URL`                | String          | (empty)                | The instance's public URL, e.g. `https://redlib.example`. Used by RSS, `/opensearch.xml` and link-preview tags. |
+
+`/opensearch.xml` and the `og:` link-preview tags take the instance's URL from `FULL_URL` when it is set. Otherwise they use the request's `Host` header, with the scheme from `X-Forwarded-Proto` (`https`, else `http`). `X-Forwarded-Host` and `Forwarded` are ignored on purpose, so a reverse proxy that rewrites `Host` (to `localhost:8080`, say) must set `REDLIB_FULL_URL`. Without `FULL_URL`, `/opensearch.xml` is cached by the visitor's browser only, not by shared caches.
 
 ## Default user settings
 

@@ -196,8 +196,9 @@ The OpenSearch descriptor is a static file with `https://localhost:8080` baked i
 
 - `templates/opensearch.xml` replaces `static/opensearch.xml`; Askama escapes the base URL.
 - `utils::request_base_url(&req)` returns `REDLIB_FULL_URL` (trailing `/` trimmed) when set, otherwise `{scheme}://{Host}`. The scheme is `X-Forwarded-Proto` when it is `http` or `https`, else `http`.
-- A request with no usable `Host` and no `REDLIB_FULL_URL` gets `400`. A `Host` that is not a valid authority, or carries `@`, is treated as unusable.
-- The response carries `Vary: Host` next to the existing cache header.
+- A request with no usable `Host` and no `REDLIB_FULL_URL` gets `400`. `Host` is usable only as a lower-cased DNS name or IPv4 address (no empty or hyphen-edged label, so no trailing dot) or a bracketed IPv6 literal, with an optional port of 1 to 65535.
+- With `REDLIB_FULL_URL` set the answer keeps `public, max-age=1209600, s-maxage=86400`. Otherwise it is `private, max-age=300` with `Vary: Host, X-Forwarded-Proto`, so a shared cache never stores a request-derived descriptor.
+- `X-Forwarded-Host` and `Forwarded` are ignored; the README says to set `REDLIB_FULL_URL` behind a proxy that rewrites `Host`.
 
 #### Notes
 
@@ -214,6 +215,8 @@ The OpenSearch descriptor is a static file with `https://localhost:8080` baked i
 
 - `src/main.rs`: `opensearch_and_og_descriptor_uses_the_request_host` — `Host: redlib.example` gives `http://redlib.example/search` (and `https://` with `X-Forwarded-Proto: https`) in the template, image and search-form URLs, and no `localhost:8080`.
 - `src/main.rs`: `opensearch_and_og_descriptor_rejects_an_unusable_host` — `Host: evil"><x` and `Host: user@redlib.example` answer `400`.
+- `src/main.rs`: `opensearch_and_og_descriptor_built_from_request_headers_is_not_shared_cacheable` and `..._from_the_configured_url_is_publicly_cacheable`.
+- `src/utils.rs`: `opensearch_and_og_request_base_url_rejects_hosts_that_are_not_host_and_port` and `..._accepts_names_addresses_and_ports_in_lower_case`; `opensearch_and_og_configured_urls_cannot_inject_markup_into_the_descriptor` (and `post.rs` `..._meta_urls_escape_a_configured_base`) pin Askama's escaping.
 - `src/main.rs`: `opensearch_and_og_descriptor_prefers_the_configured_full_url` (`sealed_test`, `REDLIB_FULL_URL=https://libred.example/`): URLs start `https://libred.example/search`.
 - `src/utils.rs`: `opensearch_and_og_request_base_url_comes_from_the_host`, `..._follows_the_forwarded_scheme`, `..._is_unknown_without_a_usable_host` and `..._prefers_the_configured_full_url`.
 
@@ -460,8 +463,8 @@ Run the milestone filters, the script tests, the three repository gates and a Pl
 
 Slice 5 implemented on 2026-11-28 against baseline `f81dcf4` (Slice 4 head).
 
-- **Checks:** `cargo fmt --check` clean; `cargo clippy --locked --all-targets -- -D warnings` clean; `cargo test --locked` passes 191 library tests (20 live-Reddit tests ignored), 28 binary tests, 3 `healthcheck` and 2 `startup_config` integration tests offline; `node --test tests/js/` passes 15 tests.
-- **Milestone filters (all `--locked`):** `opensearch_and_og` 7 lib + 3 bin; `template_a11y_and_html` 12; `a11y_markup` 9; `html_markup_and_highlighted` 11.
+- **Checks:** `cargo fmt --check` clean; `cargo clippy --locked --all-targets -- -D warnings` clean; `cargo test --locked` passes 195 library tests (20 live-Reddit tests ignored), 30 binary tests, 3 `healthcheck` and 2 `startup_config` integration tests offline; `node --test tests/js/` passes 25 tests (after the review fixes).
+- **Milestone filters (all `--locked`):** `opensearch_and_og` 11 lib + 5 bin; `template_a11y_and_html` 12; `a11y_markup` 9; `html_markup_and_highlighted` 11.
 - **Decisions:** `to_absolute_url` already existed (RSS), so the plan's proposed signature is not added; `request_base_url` and `absolute_url` are new. `og:url` and `twitter:url` use the same base as the image tags, since they are relative in the same place. `error-446` is deleted rather than guarded: no template has the element. The `#update-status` fix is in the Task 2 commit. The body attribute and the script that reads it landed together (Task 6).
 - **Scripts need no build step:** the tests load `static/*.js` into `node:vm` with fakes in `tests/js/support/dom.js`; the content hash the server puts in `?v=` follows the file. The command is also in the README under Building.
 
@@ -520,4 +523,16 @@ Pages were rendered by the real templates from fixtures and served beside the re
 
 ### Review
 
-Not yet reviewed by an independent reader.
+An adversarial reviewer read `f81dcf4..c602718` and ran the script and OpenSearch tests. No Critical findings. Verified findings and their dispositions:
+
+| Finding | Disposition | Regression test |
+| --- | --- | --- |
+| `/opensearch.xml` varies on `X-Forwarded-Proto` but sent `Vary: Host` with `public, s-maxage=86400`, so a shared cache could keep one requester's scheme for a day | Fixed: without `REDLIB_FULL_URL` it is `private, max-age=300` with `Vary: Host, X-Forwarded-Proto`; the configured URL keeps public caching | `opensearch_and_og_descriptor_built_from_request_headers_is_not_shared_cacheable` (red: header was `public, max-age=1209600, s-maxage=86400`), `opensearch_and_og_descriptor_from_the_configured_url_is_publicly_cacheable` (control) |
+| `Host` validation accepted `a:b`, `a:99999999`, `redlib.example:`, `*`, `a,b`, `a'b&c;d`, `a!b`, `redlib.example.` and did not lower-case | Fixed: `normalise_host` accepts a DNS name or IPv4 address (no empty or hyphen-edged label, so a trailing dot is rejected) or a bracketed IPv6 literal, with a port of 1 to 65535, and lower-cases it | `opensearch_and_og_request_base_url_rejects_hosts_that_are_not_host_and_port` (red: `left: Some("http://a:b") right: None`), `..._accepts_names_addresses_and_ports_in_lower_case` (red: `left: Some("http://REDLIB.Example")`) |
+| No test showed `&` or `'` cannot reach the XML or HTML unescaped | Pinned: a base URL with `&`, `'`, `"` and `<` renders escaped in the descriptor and the `og:` tags. These pass before and after, because Askama already escapes; they guard it | `opensearch_and_og_configured_urls_cannot_inject_markup_into_the_descriptor`, `opensearch_and_og_meta_urls_escape_a_configured_base` |
+| HLS retry counters never reset, so three fatal errors spread over a long video exhausted the budget; `giveUp` left a blocked `play()` promise unhandled | Fixed: `Hls.Events.FRAG_LOADED` resets both counters; `giveUp` catches the `play()` rejection | `a loaded fragment restores the retry budget, so sporadic errors over a long video do not add up` (red: `destroy` after the fourth error), `a blocked play() on the MP4 fallback is handled, not left as an unhandled rejection` (red: no handler attached), `errors with no fragment loaded in between still run out of budget` (control) |
+| The `execCommand` fallback left focus on the readonly field | Fixed: focus returns to the element that had it | `the execCommand fallback gives focus back to the Copy button`, `focus returns to the Copy button when the fallback fails too` (both red: focus stayed on the field), `copying with the Clipboard API leaves focus alone` (control) |
+| The HLS tests could not catch a dropped `if (!gaveUp)` guard, shared retry counters, or errors handled after giving up | Strengthened. I removed each guard in turn and each change failed a test | `a pending retry does not restart the stream once the player has given up`, `network and media errors each have their own budget of three`, `errors after giving up change nothing`, `non-fatal errors are ignored` |
+| A proxy that rewrites `Host` reproduces the original #25 symptom, and the behaviour was undocumented | Documented in the README next to `FULL_URL`: set `REDLIB_FULL_URL`; `X-Forwarded-Host` and `Forwarded` are ignored on purpose | None (documentation) |
+
+Accepted, not changed: the `node --test tests/js/` command is not in any CI workflow (Slice 7). The leave-Redlib popup's `<h2>` precedes the `<h1>` in the DOM but stays `visibility: hidden` until `:target`.
