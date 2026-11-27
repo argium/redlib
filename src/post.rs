@@ -80,9 +80,10 @@ pub async fn item(req: Request<Body>) -> Result<Response<Body>, String> {
 			let form = url::form_urlencoded::parse(query_string.as_bytes()).collect::<HashMap<_, _>>();
 			let query = form.get("q").unwrap().clone().to_string();
 
+			let prefs = Preferences::new(&req);
 			let comments = match query.as_str() {
-				"" => parse_comments(&response[1], &post.permalink, &post.author.name, highlighted_comment, &get_filters(&req), &req),
-				_ => query_comments(&response[1], &post.permalink, &post.author.name, highlighted_comment, &get_filters(&req), &query, &req),
+				"" => parse_comments(&response[1], &post.permalink, &post.author.name, highlighted_comment, &get_filters(&req), &prefs),
+				_ => query_comments(&response[1], &post.permalink, &post.author.name, highlighted_comment, &get_filters(&req), &query, &prefs),
 			};
 
 			// Use the Post and Comment structs to generate a website to show users
@@ -91,7 +92,7 @@ pub async fn item(req: Request<Body>) -> Result<Response<Body>, String> {
 				post,
 				url_without_query: url.clone().trim_end_matches(&format!("?q={query}&type=comment")).to_string(),
 				sort,
-				prefs: Preferences::new(&req),
+				prefs,
 				single_thread,
 				url: req_url,
 				comment_query: query,
@@ -111,21 +112,20 @@ pub async fn item(req: Request<Body>) -> Result<Response<Body>, String> {
 
 // COMMENTS
 
-fn parse_comments(json: &serde_json::Value, post_link: &str, post_author: &str, highlighted_comment: &str, filters: &HashSet<String>, req: &Request<Body>) -> Vec<Comment> {
+fn parse_comments(json: &serde_json::Value, post_link: &str, post_author: &str, highlighted_comment: &str, filters: &HashSet<String>, prefs: &Preferences) -> Vec<Comment> {
 	// Parse the comment JSON into a Vector of Comments
-	let comments = json["data"]["children"].as_array().map_or(Vec::new(), std::borrow::ToOwned::to_owned);
+	let comments = json["data"]["children"].as_array().into_iter().flatten();
 
 	// For each comment, retrieve the values to build a Comment object
 	comments
-		.into_iter()
 		.map(|comment| {
 			let data = &comment["data"];
 			let replies: Vec<Comment> = if data["replies"].is_object() {
-				parse_comments(&data["replies"], post_link, post_author, highlighted_comment, filters, req)
+				parse_comments(&data["replies"], post_link, post_author, highlighted_comment, filters, prefs)
 			} else {
 				Vec::new()
 			};
-			build_comment(&comment, data, replies, post_link, post_author, highlighted_comment, filters, req)
+			build_comment(comment, data, replies, post_link, post_author, highlighted_comment, filters, prefs)
 		})
 		.collect()
 }
@@ -137,9 +137,9 @@ fn query_comments(
 	highlighted_comment: &str,
 	filters: &HashSet<String>,
 	query: &str,
-	req: &Request<Body>,
+	prefs: &Preferences,
 ) -> Vec<Comment> {
-	let comments = json["data"]["children"].as_array().map_or(Vec::new(), std::borrow::ToOwned::to_owned);
+	let comments = json["data"]["children"].as_array().into_iter().flatten();
 	let mut results = Vec::new();
 
 	for comment in comments {
@@ -147,10 +147,10 @@ fn query_comments(
 
 		// If this comment contains replies, handle those too
 		if data["replies"].is_object() {
-			results.append(&mut query_comments(&data["replies"], post_link, post_author, highlighted_comment, filters, query, req));
+			results.append(&mut query_comments(&data["replies"], post_link, post_author, highlighted_comment, filters, query, prefs));
 		}
 
-		let c = build_comment(&comment, data, Vec::new(), post_link, post_author, highlighted_comment, filters, req);
+		let c = build_comment(comment, data, Vec::new(), post_link, post_author, highlighted_comment, filters, prefs);
 		if c.body.to_lowercase().contains(&query.to_lowercase()) {
 			results.push(c);
 		}
@@ -167,7 +167,7 @@ fn build_comment(
 	post_author: &str,
 	highlighted_comment: &str,
 	filters: &HashSet<String>,
-	req: &Request<Body>,
+	prefs: &Preferences,
 ) -> Comment {
 	let id = val(comment, "id");
 
@@ -249,6 +249,75 @@ fn build_comment(
 		collapsed,
 		is_filtered,
 		more_count,
-		prefs: Preferences::new(req),
+		hide_score: prefs.hide_score == "on",
+		hide_awards: prefs.hide_awards == "on",
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use serde_json::json;
+
+	/// A comment listing as Reddit returns it: `count` sibling comments, each with one award.
+	fn comment_listing(count: usize) -> serde_json::Value {
+		let children: Vec<_> = (0..count)
+			.map(|index| {
+				json!({
+					"kind": "t1",
+					"data": {
+						"id": format!("c{index}"),
+						"author": "someone",
+						"body": "hello",
+						"body_html": "<div class=\"md\"><p>hello</p></div>",
+						"score": 42,
+						"created_utc": 1_700_000_000.0,
+						"parent_id": "t3_abc",
+						"all_awardings": [{ "name": "Silver", "count": 1, "resized_icons": [{ "url": "https://preview.redd.it/silver.png" }] }],
+					}
+				})
+			})
+			.collect();
+		json!({ "data": { "children": children } })
+	}
+
+	/// The visible text of a comment's score paragraph (its `title` attribute always carries the real score).
+	fn score_cell(comment: &Comment) -> String {
+		let html = comment.render().unwrap();
+		let start = html.find("class=\"comment_score\"").expect("comment has a score cell");
+		let paragraph = html[start..].split("</p>").next().unwrap();
+		paragraph.split_once('>').expect("paragraph tag closes").1.trim().to_string()
+	}
+
+	#[test]
+	fn comment_prefs_reuse_hides_score_and_awards_for_every_comment() {
+		let prefs = Preferences {
+			hide_score: "on".to_string(),
+			hide_awards: "on".to_string(),
+			..Preferences::default()
+		};
+		let comments = parse_comments(&comment_listing(200), "/r/test/comments/abc/post/", "op", "", &HashSet::new(), &prefs);
+
+		assert_eq!(comments.len(), 200);
+		for (index, comment) in comments.iter().enumerate() {
+			let score = score_cell(comment);
+			assert!(
+				score.contains("&#x2022;") && !score.contains("42"),
+				"comment {index} should show the hidden-score bullet: {score}"
+			);
+			assert!(!comment.render().unwrap().contains("class=\"award\""), "comment {index} should hide its awards");
+		}
+	}
+
+	#[test]
+	fn comment_prefs_reuse_shows_score_and_awards_by_default() {
+		let comments = parse_comments(&comment_listing(200), "/r/test/comments/abc/post/", "op", "", &HashSet::new(), &Preferences::default());
+
+		assert_eq!(comments.len(), 200);
+		for (index, comment) in comments.iter().enumerate() {
+			let score = score_cell(comment);
+			assert!(score.contains("42") && !score.contains("&#x2022;"), "comment {index} should show its score: {score}");
+			assert!(comment.render().unwrap().contains("class=\"award\""), "comment {index} should show its award");
+		}
 	}
 }

@@ -200,7 +200,49 @@ fn subreddit_results(listing: &serde_json::Value, sfw_only: bool) -> Vec<Subredd
 
 #[cfg(test)]
 mod tests {
-	use super::subreddit_results;
+	use super::{subreddit_results, SearchParams, SearchTemplate};
+	use crate::test_support::post_fixture;
+	use crate::utils::Preferences;
+	use askama::Template;
+
+	async fn rendered_results(use_hls: &str, hls_post: bool) -> String {
+		SearchTemplate {
+			posts: vec![post_fixture(hls_post).await],
+			subreddits: Vec::new(),
+			sub: String::new(),
+			params: SearchParams {
+				q: "cats".to_string(),
+				sort: "relevance".to_string(),
+				t: String::new(),
+				before: String::new(),
+				after: String::new(),
+				restrict_sr: String::new(),
+				typed: "all".to_string(),
+			},
+			prefs: Preferences {
+				use_hls: use_hls.to_string(),
+				..Preferences::default()
+			},
+			url: "/search?q=cats".to_string(),
+			is_filtered: false,
+			all_posts_filtered: false,
+			all_posts_hidden_nsfw: false,
+			no_posts: false,
+		}
+		.render()
+		.unwrap()
+	}
+
+	#[tokio::test]
+	async fn static_js_caching_search_loads_hls_only_for_hls_posts() {
+		let with_hls = rendered_results("on", true).await;
+		assert!(
+			with_hls.contains("/hls.min.js?v=") && with_hls.contains("/playHLSVideo.js?v="),
+			"versioned HLS scripts expected"
+		);
+		assert!(!rendered_results("on", false).await.contains("hls.min.js"), "no HLS post, no hls.min.js");
+		assert!(!rendered_results("off", true).await.contains("hls.min.js"), "use_hls off, no hls.min.js");
+	}
 
 	fn listing() -> serde_json::Value {
 		serde_json::json!({ "data": { "children": [

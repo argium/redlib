@@ -1,8 +1,8 @@
 #![allow(clippy::cmp_owned)]
 
 use crate::utils::{
-	catch_random, error, filter_posts, format_num, format_url, gating_metadata, get_filters, info, nsfw_landing, param, redirect, rewrite_urls, setting, sfw_only, template,
-	to_absolute_url, val, Post, Preferences, Subreddit,
+	catch_random, error, filter_posts, format_num, format_url, gating_metadata, get_filters, html_page, info, nsfw_landing, param, redirect, rewrite_urls, setting, sfw_only,
+	template, to_absolute_url, val, Post, Preferences, Subreddit,
 };
 use crate::{client::json, server::RequestExt, server::ResponseExt};
 use crate::{config, utils};
@@ -213,11 +213,7 @@ pub fn quarantine(req: &Request<Body>, sub: String, restriction: &str) -> Respon
 		prefs: Preferences::new(req),
 	};
 
-	Response::builder()
-		.status(403)
-		.header("content-type", "text/html")
-		.body(wall.render().unwrap_or_default().into())
-		.unwrap_or_default()
+	html_page(wall.render(), 403)
 }
 
 pub async fn add_quarantine_exception(req: Request<Body>) -> Result<Response<Body>, String> {
@@ -283,6 +279,21 @@ fn subscription_redirect_path(query: &str, sub: &str) -> String {
 	}
 }
 
+/// The capitalisation Reddit uses for subreddit `name`, from its `about.json`. Falls back to `name`
+/// when the lookup fails; `u_` user profiles keep their name. `fetch` is `client::json` in production.
+async fn display_name<Fut>(name: &str, fetch: impl Fn(String) -> Fut) -> String
+where
+	Fut: std::future::Future<Output = Result<serde_json::Value, String>>,
+{
+	if name.starts_with("u_") {
+		return name.to_string();
+	}
+	match fetch(format!("/r/{name}/about.json?raw_json=1")).await {
+		Ok(about) => about["data"]["display_name"].as_str().unwrap_or(name).to_string(),
+		Err(_) => name.to_string(),
+	}
+}
+
 // Sub, filter, unfilter, or unsub by setting subscription cookie using response "Set-Cookie" header
 pub async fn subscriptions_filters(req: Request<Body>) -> Result<Response<Body>, String> {
 	let sub = req.param("sub").unwrap_or_default();
@@ -302,44 +313,9 @@ pub async fn subscriptions_filters(req: Request<Body>) -> Result<Response<Body>,
 	let mut sub_list = preferences.subscriptions;
 	let mut filters = preferences.filters;
 
-	// Retrieve list of posts for these subreddits to extract display names
-
-	let posts = json(format!("/r/{sub}/hot.json?raw_json=1"), true).await;
-	let display_lookup: Vec<(String, &str)> = match &posts {
-		Ok(posts) => posts["data"]["children"]
-			.as_array()
-			.map(|list| {
-				list
-					.iter()
-					.map(|post| {
-						let display_name = post["data"]["subreddit"].as_str().unwrap_or_default();
-						(display_name.to_lowercase(), display_name)
-					})
-					.collect::<Vec<_>>()
-			})
-			.unwrap_or_default(),
-		Err(_) => vec![],
-	};
-
 	// Find each subreddit name (separated by '+') in sub parameter
 	for part in sub.split('+').filter(|x| x != &"") {
-		// Retrieve display name for the subreddit
-		let display;
-		let part = if part.starts_with("u_") {
-			part
-		} else if let Some(&(_, display)) = display_lookup.iter().find(|x| x.0 == part.to_lowercase()) {
-			// This is already known, doesn't require separate request
-			display
-		} else {
-			// This subreddit display name isn't known, retrieve it
-			let path: String = format!("/r/{part}/about.json?raw_json=1");
-			display = json(path, true).await;
-			match &display {
-				Ok(display) => display["data"]["display_name"].as_str(),
-				Err(_) => None,
-			}
-			.unwrap_or(part)
-		};
+		let part = &display_name(part, |path| json(path, true)).await;
 
 		// Modify sub list based on action
 		if action.contains(&"subscribe".to_string()) && !sub_list.contains(&part.to_owned()) {
@@ -723,7 +699,63 @@ fn get_mime_type(url: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::test_support::post_fixture;
 	use route_recognizer::Params;
+	use std::sync::Mutex;
+
+	#[tokio::test]
+	async fn vary_singleflight_and_cookies_display_names_use_about_json() {
+		let requested = Mutex::new(Vec::new());
+		let fetch = |path: String| {
+			requested.lock().unwrap().push(path);
+			async { Ok(serde_json::json!({ "data": { "display_name": "Rust" } })) }
+		};
+
+		assert_eq!(display_name("rust", fetch).await, "Rust");
+		assert_eq!(
+			*requested.lock().unwrap(),
+			["/r/rust/about.json?raw_json=1"],
+			"only about.json is needed to learn the display name"
+		);
+
+		let never_called = |_: String| async { panic!("user profiles need no lookup") };
+		assert_eq!(display_name("u_spez", never_called).await, "u_spez");
+
+		let failing = |_: String| async { Err("quarantined".to_string()) };
+		assert_eq!(display_name("rust", failing).await, "rust", "a failed lookup keeps the name as given");
+	}
+
+	async fn rendered_listing(use_hls: &str, hls_post: bool) -> String {
+		SubredditTemplate {
+			sub: Subreddit::default(),
+			posts: vec![post_fixture(hls_post).await],
+			sort: ("hot".to_string(), "".to_string()),
+			ends: (String::new(), String::new()),
+			prefs: Preferences {
+				use_hls: use_hls.to_string(),
+				..Preferences::default()
+			},
+			url: "/r/test".to_string(),
+			redirect_url: "/r/test".to_string(),
+			is_filtered: false,
+			all_posts_filtered: false,
+			all_posts_hidden_nsfw: false,
+			no_posts: false,
+		}
+		.render()
+		.unwrap()
+	}
+
+	#[tokio::test]
+	async fn static_js_caching_subreddit_loads_hls_only_for_hls_posts() {
+		let with_hls = rendered_listing("on", true).await;
+		assert!(
+			with_hls.contains("/hls.min.js?v=") && with_hls.contains("/playHLSVideo.js?v="),
+			"versioned HLS scripts expected"
+		);
+		assert!(!rendered_listing("on", false).await.contains("hls.min.js"), "no HLS post, no hls.min.js");
+		assert!(!rendered_listing("off", true).await.contains("hls.min.js"), "use_hls off, no hls.min.js");
+	}
 
 	#[test]
 	fn redirect_safety_subscription_target() {

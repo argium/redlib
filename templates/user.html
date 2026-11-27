@@ -81,10 +81,7 @@ body %}
                     <p class="comment_body">{{ post.body|safe }}</p>
                 </details>
             </div>
-            {% endif %} {% endfor %} {% if prefs.use_hls == "on" %}
-            <script src="/hls.min.js"></script>
-            <script src="/playHLSVideo.js"></script>
-            {% endif %}
+            {% endif %} {% endfor %} {% call utils::hls_scripts(posts) %}
         </div>
         {% endif %}
 

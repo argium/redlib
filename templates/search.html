@@ -106,10 +106,7 @@
 				{% endif %}
 			{% endfor %}
 		{% endif %}
-		{% if prefs.use_hls == "on" %}
-		<script src="/hls.min.js"></script>
-		<script src="/playHLSVideo.js"></script>
-		{% endif %}
+		{% call utils::hls_scripts(posts) %}
 
 		{% if params.typed != "sr_user" %}
 		<footer>

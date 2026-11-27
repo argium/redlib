@@ -13,7 +13,7 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::result::Result;
 use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicBool, AtomicU16};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 use std::sync::LazyLock;
 use std::time::Duration;
 use wreq::dns::{Addrs, Name, Resolve, Resolving};
@@ -46,6 +46,7 @@ const MAX_REDIRECTS: u8 = 5;
 
 pub static OAUTH_CLIENT: LazyLock<ArcSwap<Oauth>> = LazyLock::new(|| {
 	let client = block_on(Oauth::new());
+	client.record_token_expiry();
 	tokio::spawn(token_daemon());
 	ArcSwap::new(client.into())
 });
@@ -53,6 +54,10 @@ pub static OAUTH_CLIENT: LazyLock<ArcSwap<Oauth>> = LazyLock::new(|| {
 pub static OAUTH_RATELIMIT_REMAINING: AtomicU16 = AtomicU16::new(99);
 
 pub static OAUTH_IS_ROLLING_OVER: AtomicBool = AtomicBool::new(false);
+
+/// Unix time (seconds) when the installed OAuth token stops working; `0` until one is installed.
+/// `/healthz` reads this instead of touching `OAUTH_CLIENT`, which is private to the OAuth module.
+pub static OAUTH_TOKEN_EXPIRES_AT: AtomicU64 = AtomicU64::new(0);
 
 const URL_PAIRS: [(&str, &str); 2] = [
 	(ALTERNATIVE_REDDIT_URL_BASE, ALTERNATIVE_REDDIT_URL_BASE_HOST),
@@ -450,8 +455,9 @@ fn upstream_failure(status: u16, body_is_empty: bool, ratelimit_remaining: Optio
 	}
 }
 
-/// Make a request to a Reddit API and parse the JSON response
-#[cached(size = 100, time = 30, result = true)]
+/// Make a request to a Reddit API and parse the JSON response. Concurrent calls for the same
+/// path share one upstream request instead of each spending a rate-limit slot.
+#[cached(size = 100, time = 30, result = true, sync_writes = "by_key")]
 pub async fn json(path: String, quarantine: bool) -> Result<Value, String> {
 	// Closure to quickly build errors
 	let err = |msg: &str, e: String, path: String| -> Result<Value, String> {
@@ -646,6 +652,25 @@ mod tests {
 	use {crate::config::get_setting, sealed_test::prelude::*};
 
 	const POPULAR_URL: &str = "/r/popular/hot.json?&raw_json=1&geo_filter=GLOBAL";
+
+	static SLOW_FETCHES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+	/// Stands in for `json` (which needs live Reddit) with the same `#[cached]` attributes.
+	#[cached(size = 100, time = 30, result = true, sync_writes = "by_key")]
+	async fn slow_fetch(path: String, quarantine: bool) -> Result<String, String> {
+		SLOW_FETCHES.fetch_add(1, Ordering::SeqCst);
+		tokio::time::sleep(Duration::from_millis(100)).await;
+		Ok(format!("{path}{quarantine}"))
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn vary_singleflight_and_cookies_concurrent_identical_calls_fetch_once() {
+		let calls: Vec<_> = (0..10).map(|_| tokio::spawn(slow_fetch("/r/rust/hot.json".to_string(), false))).collect();
+		for call in calls {
+			assert_eq!(call.await.unwrap(), Ok("/r/rust/hot.jsonfalse".to_string()));
+		}
+		assert_eq!(SLOW_FETCHES.load(Ordering::SeqCst), 1, "concurrent identical calls must share one upstream request");
+	}
 
 	#[tokio::test(flavor = "multi_thread")]
 	async fn media_request_times_out_waiting_for_headers() {

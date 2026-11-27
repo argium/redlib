@@ -1,5 +1,5 @@
 use crate::{
-	client::{CLIENT, OAUTH_CLIENT, OAUTH_IS_ROLLING_OVER, OAUTH_RATELIMIT_REMAINING},
+	client::{CLIENT, OAUTH_CLIENT, OAUTH_IS_ROLLING_OVER, OAUTH_RATELIMIT_REMAINING, OAUTH_TOKEN_EXPIRES_AT},
 	oauth_resources::ANDROID_APP_VERSION_LIST,
 };
 use base64::{engine::general_purpose, Engine as _};
@@ -8,7 +8,7 @@ use serde_json::json;
 use std::{
 	collections::HashMap,
 	sync::atomic::{AtomicBool, Ordering},
-	time::Duration,
+	time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tegen::tegen::TextGenerator;
 use tokio::time::timeout;
@@ -123,6 +123,12 @@ impl Oauth {
 
 	pub fn user_agent(&self) -> &str {
 		self.backend.user_agent()
+	}
+
+	/// Publishes when this client's token expires, for `/healthz`. Call it whenever a client is installed.
+	pub(crate) fn record_token_expiry(&self) {
+		let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_secs());
+		OAUTH_TOKEN_EXPIRES_AT.store(now.saturating_add(self.expires_in), Ordering::SeqCst);
 	}
 }
 
@@ -299,6 +305,7 @@ pub async fn force_refresh_token() -> RefreshOutcome {
 		&OAUTH_IS_ROLLING_OVER,
 		Oauth::try_new(),
 		|new_client| {
+			new_client.record_token_expiry();
 			OAUTH_CLIENT.swap(new_client.into());
 			OAUTH_RATELIMIT_REMAINING.store(99, Ordering::SeqCst);
 		},
@@ -565,8 +572,8 @@ fn choose<T: Copy>(list: &[T]) -> T {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use log::{Level, LevelFilter, Log, Metadata, Record};
-	use std::sync::{Mutex, Once};
+	use crate::test_support::captured_logs;
+	use log::Level;
 
 	#[test]
 	fn auth_errors_never_include_the_access_token() {
@@ -765,29 +772,6 @@ mod tests {
 		assert_eq!(token_preview("short"), "short");
 		assert_eq!(token_preview(&"a".repeat(40)), "a".repeat(32));
 		assert_eq!(token_preview(&"é".repeat(40)).chars().count(), 32);
-	}
-
-	struct CapturingLogger(Mutex<Vec<(Level, String)>>);
-
-	impl Log for CapturingLogger {
-		fn enabled(&self, _: &Metadata) -> bool {
-			true
-		}
-		fn log(&self, record: &Record) {
-			self.0.lock().unwrap().push((record.level(), record.args().to_string()));
-		}
-		fn flush(&self) {}
-	}
-
-	static LOGGER: CapturingLogger = CapturingLogger(Mutex::new(Vec::new()));
-
-	fn captured_logs() -> &'static Mutex<Vec<(Level, String)>> {
-		static INSTALL: Once = Once::new();
-		INSTALL.call_once(|| {
-			let _ = log::set_logger(&LOGGER);
-			log::set_max_level(LevelFilter::Trace);
-		});
-		&LOGGER.0
 	}
 
 	#[test]

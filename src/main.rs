@@ -14,7 +14,7 @@ use log::{info, warn};
 use redlib::client::{canonical_path, proxy, rate_limit_check, CLIENT};
 use redlib::server::{self, RequestExt};
 use redlib::utils::{error, redirect, ThemeAssets};
-use redlib::{config, duplicates, headers, instance_info, post, search, settings, subreddit, user};
+use redlib::{config, duplicates, headers, health, instance_info, post, search, settings, subreddit, user};
 
 use redlib::client::OAUTH_CLIENT;
 
@@ -169,6 +169,12 @@ fn cli() -> Command {
 				.num_args(1),
 		)
 		.arg(
+			Arg::new("healthcheck")
+				.long("healthcheck")
+				.help("Ask the server on --address/--port whether it is healthy (GET /healthz), print ok and exit 0, or exit 1")
+				.action(ArgAction::SetTrue),
+		)
+		.arg(
 			Arg::new("hsts")
 				.short('H')
 				.long("hsts")
@@ -190,6 +196,11 @@ async fn main() -> ExitCode {
 	// Parse arguments first so `--help` and `--version` work with a broken redlib.toml.
 	let matches = cli().get_matches();
 
+	// A probe only talks to the local server, so it must not need a valid redlib.toml or Reddit.
+	if matches.get_flag("healthcheck") {
+		return healthcheck(&matches).await;
+	}
+
 	// A broken redlib.toml must stop startup before anything else happens.
 	info!("Evaluating config.");
 	LazyLock::force(&config::CONFIG);
@@ -203,40 +214,10 @@ async fn main() -> ExitCode {
 	}
 }
 
-async fn run(matches: &ArgMatches) -> Result<(), String> {
-	let listener = listener_address(matches)?;
-
-	match rate_limit_check().await {
-		Ok(()) => {
-			info!("[✅] Rate limit check passed");
-		}
-		Err(e) => {
-			let mut message = format!("Rate limit check failed: {e}");
-			message += "\nThis may cause issues with the rate limit.";
-			message += "\nPlease report this error with the above information.";
-			message += "\nhttps://github.com/redlib-org/redlib/issues/new?assignees=sigaloid&labels=bug&title=%F0%9F%90%9B+Bug+Report%3A+Rate+limit+mismatch";
-			warn!("{}", message);
-			eprintln!("{message}");
-		}
-	}
-
-	let hsts = matches.get_one("hsts").map(|m: &String| m.as_str());
-
-	println!("Starting Redlib...");
-
-	// Begin constructing a server
+/// Builds the server with its default headers and every route. Nothing here touches the
+/// network, so tests can serve the real route table on a loopback port.
+fn build_app(hsts: Option<&str>) -> server::Server {
 	let mut app = server::Server::new();
-
-	// Force evaluation of statics. In instance_info case, we need to evaluate
-	// the timestamp so deploy date is accurate - in config case, we need to
-	// evaluate the configuration to avoid paying penalty at first request -
-	// in OAUTH case, we need to retrieve the token to avoid paying penalty
-	// at first request
-
-	info!("Evaluating instance info.");
-	LazyLock::force(&instance_info::INSTANCE_INFO);
-	info!("Creating OAUTH client.");
-	LazyLock::force(&OAUTH_CLIENT);
 
 	// Define default headers (added to all responses)
 	app.default_headers = headers! {
@@ -280,18 +261,19 @@ async fn run(matches: &ArgMatches) -> Result<(), String> {
 	app.at("/opensearch.xml").get(|_| opensearch().boxed());
 	app
 		.at("/playHLSVideo.js")
-		.get(|_| resource(include_str!("../static/playHLSVideo.js"), "text/javascript", false).boxed());
+		.get(|_| resource(include_str!("../static/playHLSVideo.js"), "text/javascript", true).boxed());
 	app
 		.at("/hls.min.js")
-		.get(|_| resource(include_str!("../static/hls.min.js"), "text/javascript", false).boxed());
+		.get(|_| resource(include_str!("../static/hls.min.js"), "text/javascript", true).boxed());
 	app
 		.at("/highlighted.js")
-		.get(|_| resource(include_str!("../static/highlighted.js"), "text/javascript", false).boxed());
+		.get(|_| resource(include_str!("../static/highlighted.js"), "text/javascript", true).boxed());
 	app
 		.at("/check_update.js")
-		.get(|_| resource(include_str!("../static/check_update.js"), "text/javascript", false).boxed());
-	app.at("/copy.js").get(|_| resource(include_str!("../static/copy.js"), "text/javascript", false).boxed());
+		.get(|_| resource(include_str!("../static/check_update.js"), "text/javascript", true).boxed());
+	app.at("/copy.js").get(|_| resource(include_str!("../static/copy.js"), "text/javascript", true).boxed());
 
+	app.at("/healthz").get(|_| health::healthz().boxed());
 	app.at("/commits.atom").get(|_| async move { proxy_commit_info().await }.boxed());
 	app.at("/instances.json").get(|_| async move { proxy_instances().await }.boxed());
 
@@ -408,6 +390,62 @@ async fn run(matches: &ArgMatches) -> Result<(), String> {
 
 	// Default service in case no routes match
 	app.at("/*").get(|req| error(req, "Nothing here").boxed());
+
+	app
+}
+
+/// `--healthcheck`: exits 0 and prints `ok` when the local server's `/healthz` answers 200,
+/// otherwise exits 1 with the reason on stderr (for Docker `HEALTHCHECK`, which has no curl).
+async fn healthcheck(matches: &ArgMatches) -> ExitCode {
+	let outcome = match listener_address(matches) {
+		Ok(listen) => health::probe(listen).await,
+		Err(message) => Err(message),
+	};
+	match outcome {
+		Ok(()) => {
+			println!("ok");
+			ExitCode::SUCCESS
+		}
+		Err(message) => {
+			eprintln!("unhealthy: {message}");
+			ExitCode::FAILURE
+		}
+	}
+}
+
+async fn run(matches: &ArgMatches) -> Result<(), String> {
+	let listener = listener_address(matches)?;
+
+	match rate_limit_check().await {
+		Ok(()) => {
+			info!("[✅] Rate limit check passed");
+		}
+		Err(e) => {
+			let mut message = format!("Rate limit check failed: {e}");
+			message += "\nThis may cause issues with the rate limit.";
+			message += "\nPlease report this error with the above information.";
+			message += "\nhttps://github.com/redlib-org/redlib/issues/new?assignees=sigaloid&labels=bug&title=%F0%9F%90%9B+Bug+Report%3A+Rate+limit+mismatch";
+			warn!("{}", message);
+			eprintln!("{message}");
+		}
+	}
+
+	let hsts = matches.get_one("hsts").map(|m: &String| m.as_str());
+
+	println!("Starting Redlib...");
+
+	// Force evaluation of statics. In instance_info case, we need to evaluate
+	// the timestamp so deploy date is accurate - in config case, we need to
+	// evaluate the configuration to avoid paying penalty at first request -
+	// in OAUTH case, we need to retrieve the token to avoid paying penalty
+	// at first request
+
+	info!("Evaluating instance info.");
+	LazyLock::force(&instance_info::INSTANCE_INFO);
+	info!("Creating OAUTH client.");
+	LazyLock::force(&OAUTH_CLIENT);
+
+	let app = build_app(hsts);
 
 	println!("Running Redlib v{} on {listener}!", env!("CARGO_PKG_VERSION"));
 
@@ -670,6 +708,50 @@ mod tests {
 		// Real share ids are mixed-case.
 		assert!(is_share_link_id("Sx3Yb7LbhH") && is_share_link_id("abcdefgh"));
 		assert!(!is_share_link_id("abcdefg") && !is_share_link_id("abcdefghijkl") && !is_share_link_id("abcdefg-hi"));
+	}
+
+	/// Serves the real route table on a free loopback port until the returned handle is aborted.
+	fn serve_app() -> (SocketAddr, tokio::task::JoinHandle<Result<(), hyper::Error>>) {
+		let address = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+		(address, tokio::spawn(build_app(None).listen(address)))
+	}
+
+	async fn fetch(address: SocketAddr, path: &str) -> Response<Body> {
+		let uri: hyper::Uri = format!("http://{address}{path}").parse().unwrap();
+		hyper::Client::new().get(uri).await.unwrap()
+	}
+
+	#[tokio::test]
+	async fn static_js_caching_scripts_carry_cache_control() {
+		let (address, server) = serve_app();
+		for script in ["/hls.min.js", "/playHLSVideo.js", "/highlighted.js", "/check_update.js", "/copy.js"] {
+			let response = fetch(address, script).await;
+			assert_eq!(response.status(), 200, "{script}");
+			let cache_control = response.headers().get("cache-control").unwrap_or_else(|| panic!("missing Cache-Control for {script}"));
+			assert!(cache_control.to_str().unwrap().contains("max-age"), "{script}: {cache_control:?}");
+		}
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn healthz_and_shutdown_route_answers_200_then_503() {
+		use redlib::client::OAUTH_TOKEN_EXPIRES_AT;
+		use std::sync::atomic::Ordering;
+
+		let (address, server) = serve_app();
+		let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+		OAUTH_TOKEN_EXPIRES_AT.store(now + 3600, Ordering::SeqCst);
+		let (status, body) = page_text(fetch(address, "/healthz").await).await;
+		assert_eq!(status, 200, "{body}");
+		let report: serde_json::Value = serde_json::from_str(&body).unwrap();
+		assert_eq!((report["status"].as_str(), report["oauth_ready"].as_bool()), (Some("ok"), Some(true)));
+
+		OAUTH_TOKEN_EXPIRES_AT.store(1, Ordering::SeqCst);
+		let (status, body) = page_text(fetch(address, "/healthz").await).await;
+		assert_eq!(status, 503, "{body}");
+		assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["status"], "degraded");
+		server.abort();
 	}
 
 	#[test]

@@ -192,6 +192,40 @@ pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::test_support::post_fixture;
+
+	async fn rendered_profile(use_hls: &str, hls_post: bool) -> String {
+		UserTemplate {
+			user: User::default(),
+			posts: vec![post_fixture(hls_post).await],
+			sort: ("hot".to_string(), "".to_string()),
+			ends: (String::new(), String::new()),
+			listing: "overview".to_string(),
+			prefs: Preferences {
+				use_hls: use_hls.to_string(),
+				..Preferences::default()
+			},
+			url: "/user/test".to_string(),
+			redirect_url: "/user/test".to_string(),
+			is_filtered: false,
+			all_posts_filtered: false,
+			all_posts_hidden_nsfw: false,
+			no_posts: false,
+		}
+		.render()
+		.unwrap()
+	}
+
+	#[tokio::test]
+	async fn static_js_caching_user_loads_hls_only_for_hls_posts() {
+		let with_hls = rendered_profile("on", true).await;
+		assert!(
+			with_hls.contains("/hls.min.js?v=") && with_hls.contains("/playHLSVideo.js?v="),
+			"versioned HLS scripts expected"
+		);
+		assert!(!rendered_profile("on", false).await.contains("hls.min.js"), "no HLS post, no hls.min.js");
+		assert!(!rendered_profile("off", true).await.contains("hls.min.js"), "use_hls off, no hls.min.js");
+	}
 
 	#[tokio::test(flavor = "multi_thread")]
 	#[ignore = "requires live Reddit"]
