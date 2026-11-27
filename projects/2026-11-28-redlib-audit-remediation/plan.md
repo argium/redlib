@@ -155,12 +155,12 @@ Enforce `REDLIB_SFW_ONLY=on` inside `Preferences::new()`, listing filters, RSS h
 
 #### Slice 2 Milestones
 
-- [ ] **M2.1**: Post bodies containing code fences sanitise raw HTML (approved: escape raw HTML events) and preserve spoilers and `r/`/`u/` autolinks (#3).
-- [ ] **M2.2**: `utils::redirect()` rejects off-site/protocol-relative targets (`//evil.com`, `/\evil.com`, `https://...`) and HTML-escapes its fallback body across settings, subscribe/filter, and quarantine routes (#5).
-- [ ] **M2.3**: `REDLIB_SFW_ONLY=on` cannot be bypassed via cookies, listings, failed metadata fetches, or RSS (#7).
-- [ ] **M2.4**: `Accept-Encoding` parsing cannot grow memory unboundedly; `POST /settings` and `/settings/encoded-restore` enforce streaming byte caps; `deflate_decompress` caps decompressed bytes; ineffective synchronous `timeout(1s, ...)` wrappers are removed or moved to `spawn_blocking`; non-base36 short-link paths return 404 without calling Reddit (#4, #33).
-- [ ] **M2.5**: `IPV4_ONLY`/`IPV6_ONLY` parse booleans strictly and never override an explicit `--address`; invalid existing `redlib.toml` handles errors by failing startup non-zero with a diagnostic message; server bind/runtime failures exit with non-zero status (#6, #8, #13).
-- [ ] **M2.6** `[Medium]`: Hyper server configures `http1_header_read_timeout` to harden against slowloris connections (#45).
+- [x] **M2.1**: Post bodies containing code fences sanitise raw HTML (approved: escape raw HTML events) and preserve spoilers and `r/`/`u/` autolinks (#3).
+- [x] **M2.2**: `utils::redirect()` rejects off-site/protocol-relative targets (`//evil.com`, `/\evil.com`, `https://...`) and HTML-escapes its fallback body across settings, subscribe/filter, and quarantine routes (#5).
+- [x] **M2.3**: `REDLIB_SFW_ONLY=on` cannot be bypassed via cookies, listings, failed metadata fetches, or RSS (#7).
+- [x] **M2.4**: `Accept-Encoding` parsing cannot grow memory unboundedly; `POST /settings` and `/settings/encoded-restore` enforce streaming byte caps; `deflate_decompress` caps decompressed bytes; ineffective synchronous `timeout(1s, ...)` wrappers are removed or moved to `spawn_blocking`; non-base36 short-link paths return 404 without calling Reddit (#4, #33).
+- [x] **M2.5**: `IPV4_ONLY`/`IPV6_ONLY` parse booleans strictly and never override an explicit `--address`; invalid existing `redlib.toml` handles errors by failing startup non-zero with a diagnostic message; server bind/runtime failures exit with non-zero status (#6, #8, #13).
+- [x] **M2.6** `[Medium]`: Hyper server configures `http1_header_read_timeout` to harden against slowloris connections (#45).
 
 <details>
 <summary>⚙️ <b>Technical details</b></summary>

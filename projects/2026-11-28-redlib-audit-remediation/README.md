@@ -15,7 +15,7 @@ Remediation of the 55 confirmed bugs and medium-to-high value improvements in [r
 
 ## Workflow status
 
-Engineering-led project without a separate `spec.md`; acceptance criteria live in `plan.md` milestones. The plan and its defaults were approved on 2026-11-28. Slice 1 is accepted on `fix/oauth-client-reliability` (see its Acceptance Evidence).
+Engineering-led project without a separate `spec.md`; acceptance criteria live in `plan.md` milestones. The plan and its defaults were approved on 2026-11-28. Slice 1 is accepted on `fix/oauth-client-reliability` (see its Acceptance Evidence). Slice 2 is implemented on `fix/security-and-input-hardening`; its evidence is in `tasks-slice-2.md`.
 
 ## Artifacts
 
@@ -25,10 +25,11 @@ Engineering-led project without a separate `spec.md`; acceptance criteria live i
 | [intent.md](./intent.md) | Request history and agreed decisions | Agreed |
 | [plan.md](./plan.md) | 7 vertical slices, milestones, and acceptance checks | Ready |
 | [tasks-slice-1.md](./tasks-slice-1.md) | Slice 1 executable tasks | Complete |
+| [tasks-slice-2.md](./tasks-slice-2.md) | Slice 2 executable tasks | Complete |
 
 ## Next action
 
-Open the Slice 1 draft PR, then compile Slice 2 into `tasks-slice-2.md` on `fix/security-and-input-hardening`.
+Open the Slice 2 draft PR stacked on Slice 1, then compile Slice 3 into `tasks-slice-3.md` on `perf/server-and-observability`.
 
 ## References
 
