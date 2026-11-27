@@ -1,6 +1,6 @@
 # Redlib Audit Remediation, Slice 4 — Task List
 
-- **Status:** Ready
+- **Status:** Complete
 - **Author:** Argi
 - **Created:** 2026-11-28
 - **Language:** Rust
@@ -84,7 +84,7 @@ Red failures: `/r/rust/wiki/` vs `/r/rust/wiki/faq/index`; `Pushshift frontend` 
 
 </details>
 
-- [ ] Task 1 complete
+- [x] Task 1 complete
 
 ---
 
@@ -113,16 +113,15 @@ Red failures: `/r/rust/wiki/` vs `/r/rust/wiki/faq/index`; `Pushshift frontend` 
 
 **Tests (red)**, in `src/subreddit.rs` and `src/user.rs`:
 
-- `rss_feeds_off_refuses_before_fetching` (`sealed_test`, `REDLIB_ENABLE_RSS=off`, 5 s timeout): `rss(req)` answers with "RSS is disabled". Red: the call goes on to fetch from Reddit (the red run sets a dead proxy so nothing leaves the machine).
-- `rss_feeds_subreddit_titles_are_escaped_once`: a post titled `Q&A <b>"x"</b>` round-trips through `Channel::read_from` as the identical title; the link is the one passed in.
-- `rss_feeds_subreddit_body_is_not_decoded_into_markup` and `rss_feeds_user_body_is_not_decoded_into_markup`: a body containing `&lt;img src=x&gt;` still holds `&lt;img` after the XML round trip and holds no `<img`.
-- `rss_feeds_user_channel_has_a_link`: `channel.link()` is `https://redlib.example/user/spez`.
+- `rss_feeds_subreddit_off_refuses_before_fetching` and `rss_feeds_user_off_refuses_before_fetching` (`sealed_test`, `REDLIB_ENABLE_RSS=off`): the handler answers "RSS is disabled" within 5 s, on a thread of its own (`test_support::answer_without_fetching`). A handler that goes on to fetch blocks inside `OAUTH_CLIENT`'s initialiser, so a timeout on the same thread cannot fire.
+- `rss_feeds_subreddit_listing_is_fetched_as_raw_json`: `feed_path("rust", "top", "t=week")` is `/r/rust/top.json?t=week&raw_json=1`.
+- `rss_feeds_subreddit_feed_keeps_text_as_the_visitor_wrote_it` and `rss_feeds_user_feed_has_a_link_and_keeps_typed_text_as_text`: a fixture post titled `Q&A <b>"x"</b>` with body `&lt;img src=x&gt; &amp; left` round-trips through `rss::Channel::read_from` with the identical title, the body still holds `&lt;img src=x&gt;` and no `<img`, and the channel link is the one passed in.
 
-Red failures: reaching Reddit; `Q&amp;A` vs `Q&A`; `<img src=x>` present; empty link.
+Red failures: timeout (the handler went on to fetch, run with a dead proxy so nothing left the machine); `/r/rust/top.json?t=week` without `raw_json`; `<img src=x>` present in the content; empty channel link.
 
 **Implementation guidance (green)**:
 
-- Handler: `if !utils::enable_rss() { return Ok(error(..)) }`; append `&raw_json=1` to the subreddit path.
+- Handler: `if !utils::enable_rss() { return Ok(error(..)) }`; `feed_path` appends `&raw_json=1` to the subreddit path.
 - Drop `decode_html` from both feed builders and from `get_rss_image` (URLs from raw JSON need no decoding); remove the now-unused imports.
 
 </details>
@@ -136,7 +135,7 @@ Red failures: reaching Reddit; `Q&amp;A` vs `Q&A`; `<img src=x>` present; empty 
 
 </details>
 
-- [ ] Task 2 complete
+- [x] Task 2 complete
 
 ---
 
@@ -166,14 +165,16 @@ Searching `C++ & AT&T #1 100%` loses everything after the first `&` when Redlib 
 **Tests (red)**:
 
 - `src/search.rs`: `search_encoding_and_comments_subreddit_lookup_encodes_the_query` — `subreddit_search_path("C++ & AT&T #1 100%", "")` is `/subreddits/search.json?q=C%2B%2B%20%26%20AT%26T%20%231%20100%25&limit=3`.
-- `src/search.rs`: `search_encoding_and_comments_links_carry_the_encoded_query` — render with `q = C++ & AT&T #1 100% "x"`: every `?q=` href (back, more, PREV, NEXT) holds the encoded text, the input `value` and `<title>` hold it HTML-escaped once, and nothing contains `&quot;`.
-- `src/post.rs`: `search_encoding_and_comments_matches_text_not_markup` — a link-only comment is not found by `href`, `class` or `md`; a plain comment is found by its words, and by a different letter case; a removed comment is not found by its archive link.
+- `src/search.rs`: `search_encoding_and_comments_params_keep_the_query_as_raw_text` — `search_params` (one builder for both result branches) keeps `q` as typed.
+- `src/search.rs`: `search_encoding_and_comments_links_carry_the_encoded_query` — render with `q = C++ & AT&T #1 100% "x"`: every `?q=` href (back, more, PREV, NEXT) holds the encoded text.
+- `src/search.rs`: `search_encoding_and_comments_query_is_html_escaped_once_where_shown` — the input `value` and `<title>` hold the query escaped once, and nothing contains `&quot;`.
+- `src/post.rs`: `search_encoding_and_comments_matches_text_not_markup` — a link-only comment is not found by `href`, `class`, `md` or `div`; a plain comment is found by its words, in any letter case; a removed comment is not found by its archive link.
 
-Red failures: `?q=C++ & AT&T`; `&quot;` in the page; `href` matched 2 comments.
+Red failures: `/subreddits/search.json?q=C+++&+AT&T+#1+...`; `say &quot;hi&quot;`; zero encoded links; the search box broken by the raw `"`; `href` matched the link comment.
 
 **Implementation guidance (green)**:
 
-- `Cargo.toml`: add `"urlencode"` to askama's features (no new crate; `percent-encoding` is already locked).
+- `Cargo.toml`: add `"urlencode"` to askama's features (no new crate; `percent-encoding` is already locked). `sort`, `t` and `restrict_sr` are encoded in the same links; cursor ids are Reddit-issued and left alone.
 - Encode with `percent_encoding::utf8_percent_encode(q, NON_ALPHANUMERIC)`, so Rust and templates use one spelling (`%20`, never `+`, for a space).
 - `query_comments`: compute `val(comment, "body").to_lowercase().contains(..)` before `build_comment`.
 
@@ -188,7 +189,7 @@ Red failures: `?q=C++ & AT&T`; `&quot;` in the page; `href` matched 2 comments.
 
 </details>
 
-- [ ] Task 3 complete
+- [x] Task 3 complete
 
 ---
 
@@ -200,7 +201,7 @@ Red failures: `?q=C++ & AT&T`; `&quot;` in the page; `href` matched 2 comments.
 
 #### Solution
 
-`rewrite_emotes` walks the `media_metadata` entries and handles each as a unit: its own `id`, `s.u` and `s.y`. Entries that are not emotes (no emote ID or an `s.u` outside the emote bucket) are skipped, and the `serde_json_path` dependency use goes with the parallel vectors.
+`rewrite_emotes` walks the `media_metadata` entries and handles each as a unit: its own `id`, `s.u` and `s.y`. Entries that are not emotes (no emote ID, or an `s.u` outside Reddit's emote bucket) are skipped. `serde_json_path` was used only here, so the dependency is removed with it.
 
 #### Notes
 
@@ -213,14 +214,14 @@ Red failures: `?q=C++ & AT&T`; `&quot;` in the page; `href` matched 2 comments.
 <details>
 <summary>⚙️ <b>Technical details</b></summary>
 
-**Test (red)** — `src/utils.rs`, `rewrite_emotes_pairs_each_emote_with_its_own_link_and_size`: `media_metadata` with, in order, a `giphy|…` GIF entry (no `s.u`), emote `:1:` (size 20) and emote `:2:` (size 60); the comment text holds `:1: :2:`; the output has the first emote's URL at 20 and the second's at 60, in that order. A second case, `rewrite_emotes_leaves_unknown_codes_alone`, keeps `:99:` text when no entry has that id.
+**Test (red)** — `src/utils.rs`, `rewrite_emotes_pairs_each_emote_with_its_own_link_and_size`: `media_metadata` (ordered by key, as `serde_json` keeps it) with an animated GIF whose key sorts first (it has `id` and `s.y` but no `s.u`), emote 2028 (size 60) and emote 2029 (size 20); the comment holds `:2028: and :2029: and :99:`. Each emote gets its own file and size, and `:99:` stays text. The existing `test_rewriting_emotes` single-emote case is the control that passes before and after.
 
-Red failure: the first emote shows the second emote's URL and size 20 for both.
+Red failure: `:2028:` was replaced with `Second.png` at size 300 (the GIF's), and `:2029:` was left as text.
 
 **Implementation guidance (green)**:
 
 - `media_metadata.as_object().into_iter().flatten()`; read `entry["id"]`, `entry["s"]["u"]`, `entry["s"]["y"]` as `str`/`i64`.
-- Keep `REDDIT_EMOTE_ID_NUMBER_REGEX` and `REDDIT_EMOTE_LINK_REGEX` anchored on the unquoted strings; the old code matched JSON-quoted strings and relied on the trailing `"` being captured, so the new format string closes the `src` quote itself.
+- The two regexes now match the unquoted strings (`^...$`). The old code matched JSON-quoted strings and relied on the capture including the closing quote, so the format string now writes that quote itself.
 
 </details>
 
@@ -233,7 +234,7 @@ Red failure: the first emote shows the second emote's URL and size 20 for both.
 
 </details>
 
-- [ ] Task 4 complete
+- [x] Task 4 complete
 
 ---
 
@@ -245,7 +246,7 @@ A flair such as `C# & 100%` becomes `?q=flair_name%3A%22C# &amp; 100%%22`, which
 
 #### Solution
 
-`templates/utils.html` (two flair links), `templates/duplicates.html`, `templates/wall.html` and `templates/nsfwlanding.html` apply `|urlencode_strict` to the interpolated value. Askama still HTML-escapes nothing twice: the filter's output holds only unreserved characters and `%XX`.
+`templates/utils.html` (two flair links), `templates/duplicates.html`, `templates/wall.html` and `templates/nsfwlanding.html` apply `|urlencode_strict` to the interpolated value. The filter's output holds only unreserved characters and `%XX`, so HTML escaping cannot change it.
 
 #### Notes
 
@@ -253,18 +254,18 @@ A flair such as `C# & 100%` becomes `?q=flair_name%3A%22C# &amp; 100%%22`, which
 
 - **Verify:** `cargo test --locked flair_gallery_and_prefs_versioning_links` passes.
 
-- Boundary: templates rendered from fixtures (`post_in_list` via `SubredditTemplate`, `WallTemplate`, `NSFWLandingTemplate`). `subreddit.rs`/`user.rs` `redirect_url` is out of this finding's list and unchanged.
+- Boundary: templates rendered from fixtures (`SubredditTemplate`, `PostTemplate`, `DuplicatesTemplate`, the wall and the NSFW landing page). `subreddit.rs`/`user.rs` `redirect_url` is out of this finding's list and unchanged.
 
 <details>
 <summary>⚙️ <b>Technical details</b></summary>
 
 **Tests (red)** — `flair_gallery_and_prefs_versioning_links_*`:
 
-- `..._flair_search_link_encodes_the_flair`: a listing post with flair `C# & 100%` renders `q=flair_name%3A%22C%23%20%26%20100%25%22&restrict_sr=on` and no raw `C# &`.
-- `..._wall_redirect_keeps_the_query`: `quarantine(req for /r/edgy?sort=new&t=week)` renders `redir=%2Fr%2Fedgy%3Fsort%3Dnew%26t%3Dweek`; decoding that parameter gives the original path.
-- `..._nsfw_landing_redirect_keeps_the_query`: the same for `redirect=` on the post landing page.
+- `..._listing_flair_search_encodes_the_flair`, `..._post_flair_search_encodes_the_flair`, `..._duplicates_flair_search_encodes_the_flair`: the page for a post with flair `C# & 100%` links `/r/test/search?q=flair_name%3A%22C%23%20%26%20100%25%22&restrict_sr=on` (listing, post header, original post and duplicate on the duplicates page).
+- `..._wall_form_returns_to_the_full_url`: submitting the form of `quarantine(/r/edgy?sort=new&t=week)` to `add_quarantine_exception` redirects to `/r/edgy?sort=new&t=week`.
+- `..._nsfw_bypass_returns_to_the_full_url`: following the NSFW landing page's bypass link through `settings::update` redirects to the original post URL with its query.
 
-Red failures: raw `C# &amp; 100%` in the href; `redir=/r/edgy?sort=new&t=week`.
+Red failures: `q=flair_name%3A%22C# &#38; 100%%22`; `/r/edgy?sort=new` (tail lost at the first `&`).
 
 </details>
 
@@ -277,7 +278,7 @@ Red failures: raw `C# &amp; 100%` in the href; `redir=/r/edgy?sort=new&t=week`.
 
 </details>
 
-- [ ] Task 5 complete
+- [x] Task 5 complete
 
 ---
 
@@ -302,9 +303,9 @@ Reddit marks media that failed processing with `status` other than `valid` and n
 <details>
 <summary>⚙️ <b>Technical details</b></summary>
 
-**Test (red)** — `flair_gallery_and_prefs_versioning_gallery_skips_invalid_items`: a gallery post with three items (valid image, `status: "failed"`, valid id missing from metadata) parses to one `GalleryMedia`, whose URL is the valid one; a valid GIF entry uses `s.gif`.
+**Test (red)** — `flair_gallery_and_prefs_versioning_gallery_skips_invalid_items`: a gallery post with four items (valid image, `status: "failed"`, an id with no metadata, a valid GIF that uses `s.gif`) parses to the image and the GIF only.
 
-Red failure: `left: 3 right: 1`.
+Red failure: the failed and unknown items came back with an empty URL (`("failed upload", "")`, `("no metadata", "")`).
 
 </details>
 
@@ -317,7 +318,7 @@ Red failure: `left: 3 right: 1`.
 
 </details>
 
-- [ ] Task 6 complete
+- [x] Task 6 complete
 
 ---
 
@@ -325,39 +326,35 @@ Red failure: `left: 3 right: 1`.
 
 #### Problem
 
-`Preferences` is marked `#[revisioned(revision = 1)]`, but the export string is plain `bincode`. Adding a field changes the byte layout, so every export a visitor saved before the upgrade fails to restore. The `revision` attribute does nothing today.
+`Preferences` is marked `#[revisioned(revision = 1)]`, but the export string is plain `bincode`, so the attribute does nothing. Adding a field changes the byte layout, and every export a visitor saved before the upgrade then fails to restore.
 
 #### Solution
 
-- Exports are `base2048(deflate(b"RLPR" + revisioned bytes))`. `RLPR` is a magic header: a v1 bincode payload starts with the 8-byte length of `theme`, whose second byte is always `0`, so the header cannot be mistaken for it.
-- `Preferences::from_export_bytes` accepts both: the header selects the revisioned reader; anything else is read as v1 bincode.
-- `to_export_string` replaces `to_bincode_str`; `available_themes` is not exported (the restore handler already discards it).
-- `settings::encoded_restore` and the settings page use the new names.
+- Exports are `base2048(deflate(b"RLP" + version byte + bincode))`, version `2`. A v1 export (bare bincode) starts with the 8-byte length of `theme`, whose second byte is always `0`, so it can never start with `RLP`.
+- `Preferences::from_export_string(encoded, limit)` owns the whole read path (base2048, bounded inflate, header dispatch): `RLP` + `2` reads the current layout, a bare payload reads as v1, any other version is an error.
+- `to_export_string` replaces `to_bincode_str`; `available_themes` is `serde(skip)`, so it is not exported and a restored value is always empty.
+- The `revision` crate's reader is not used: `String::deserialize_revisioned` allocates `vec![0; len]` from the length in the input (revision 0.17.1), so a 1 MiB import could abort the process. `bincode` refuses a length longer than the remaining input. The unused `#[revisioned]` attributes and the `revision` dependency are removed.
+- `settings::encoded_restore` and `templates/settings.html` use the new names.
 
 #### Notes
 
-- **Location:** `src/utils.rs`, `src/settings.rs`, `templates/settings.html`
+- **Location:** `src/utils.rs`, `src/settings.rs`, `templates/settings.html`, `Cargo.toml`
 
 - **Verify:** `cargo test --locked flair_gallery_and_prefs_versioning_prefs` passes.
 
-- Boundary: byte-level encode/decode and `encoded_restore` on a request body. The three `KNOWN_GOOD_CONFIGS` v1 strings are decoded through the new reader.
+- Boundary: byte-level encode/decode, and `encoded_restore` on a request body. The three `KNOWN_GOOD_CONFIGS` v1 strings are decoded through the new reader.
 
 <details>
 <summary>⚙️ <b>Technical details</b></summary>
 
 **Tests (red)** — `flair_gallery_and_prefs_versioning_prefs_*`:
 
-- `..._export_round_trips_and_is_versioned`: non-default preferences survive `to_export_string` → `from_export_bytes`, and the bytes start with `RLPR`.
-- `..._known_good_v1_exports_still_decode` (replaces the two `KNOWN_GOOD_CONFIGS` tests that called `bincode` directly): every fixture decodes through `from_export_bytes` and re-exports to something that decodes to the same preferences.
-- `..._encoded_restore_accepts_v1_and_current_exports`: `settings::encoded_restore` redirects for a `KNOWN_GOOD_CONFIGS` string and for a fresh export, to the same `/settings/restore/?…` shape.
-- `..._unknown_bytes_are_an_error`: truncated and empty inputs return `Err`, not a panic.
+- `..._export_round_trips_with_a_version_header`: customised preferences survive `to_export_string` then `from_export_string`, and the payload starts with `RLP` and version byte 2.
+- `..._known_good_v1_exports_still_decode` (replaces the two `KNOWN_GOOD_CONFIGS` tests and the bincode loop test, which called `bincode` directly): every fixture decodes and re-exports to something that decodes to the same preferences.
+- `..._malformed_exports_are_errors`: empty, header-only, truncated and huge-length payloads, text that is not base2048, and version 99 all return `Err` (the last names the version).
+- `settings::tests::..._encoded_restore_accepts_v1_and_current_exports`: `encoded_restore` redirects for a payload made the old way (deflated bincode) and for a fresh export, both carrying `theme=dark`.
 
-Red failures: compile errors (new names) resolved by stubs that keep `bincode`, then `bytes do not start with RLPR`.
-
-**Implementation guidance (green)**:
-
-- `revision::Revisioned::{serialize_revisioned, deserialize_revisioned}` on `Preferences` (already derived).
-- Derive `Clone` so the export can blank `available_themes`.
+Red failures: `an export names its version`; `Failed to deserialize bytes into Preferences struct: io error:` (version 99 read as bare bincode). The v1 compatibility tests pass before and after: they guard the old format.
 
 </details>
 
@@ -370,7 +367,7 @@ Red failures: compile errors (new names) resolved by stubs that keep `bincode`, 
 
 </details>
 
-- [ ] Task 7 complete
+- [x] Task 7 complete
 
 ---
 
@@ -395,7 +392,7 @@ Run the four milestone filters and the three repository gates, then record the r
 <details>
 <summary>⚙️ <b>Technical details</b></summary>
 
-- `cargo test --locked wiki_info_and_config`, `rss_feeds`, `search_encoding_and_comments`, `rewrite_emotes`, `flair_gallery_and_prefs_versioning`.
+- `cargo test --locked wiki_info_and_config`, `rss_feeds`, `search_encoding_and_comments`, `rewrite_emotes`, `flair_gallery_and_prefs_versioning`, then the full suite.
 
 </details>
 
@@ -408,8 +405,53 @@ Run the four milestone filters and the three repository gates, then record the r
 
 </details>
 
-- [ ] Task 8 complete
+- [x] Task 8 complete
 
 ## Acceptance Evidence
 
-_Filled in when the tasks are complete._
+Slice 4 implemented on 2026-11-28 against baseline `d3b4b58` (Slice 3 head).
+
+- **Checks:** `cargo fmt --check` clean; `cargo clippy --locked --all-targets -- -D warnings` clean; `cargo test --locked` passes 150 library tests (20 live-Reddit tests ignored), 25 binary tests, 3 `healthcheck` and 2 `startup_config` integration tests offline.
+- **Milestone filters (all `--locked`):** `wiki_info_and_config` 4 lib + 1 bin (the `sealed_test` case is counted twice by the runner); `rss_feeds` 7 (5 tests, 2 of them `sealed_test`); `search_encoding_and_comments` 5; `rewrite_emotes` 1 (plus the existing `test_rewriting_emotes` control); `flair_gallery_and_prefs_versioning` 10.
+- **Decisions:** `SearchParams.q_enc` from the plan is not added: templates apply Askama's `urlencode_strict` to the raw `q` (Askama's `urlencode` feature, no new crate). The export header is `RLP` plus a version byte, with bincode inside; the `revision` crate is not used for reading (see Task 7) and is removed together with the dead `#[revisioned]` attributes. `serde_json_path` is removed because `rewrite_emotes` was its only user. `GalleryMedia::parse` keeps only `status == "valid"` items with a non-empty URL.
+
+### Red-green
+
+| Milestone | Test(s) | Observed red failure |
+| --- | --- | --- |
+| M4.1 | `wiki_info_and_config_wiki_shortcut_keeps_the_page_path` | `left: "/r/rust/wiki/" right: "/r/rust/wiki/faq/index"` |
+| M4.1 | `wiki_info_and_config_info_txt_values_sit_under_their_labels` | `Pushshift frontend: left: Some("value-of-enable_rss") right: Some("value-of-pushshift")` |
+| M4.1 | `wiki_info_and_config_autoplay_default_is_applied_to_preferences` | `left: "" right: "on"` |
+| M4.1 | `wiki_info_and_config_app_json_env_names_are_config_keys` | `app.json names variables that Config does not read: ["REDLIB_HIDE_HLS_NOTIFICATION", "REDLIB_USE_HLS"]` |
+| M4.2 | `rss_feeds_subreddit_off_refuses_before_fetching`, `rss_feeds_user_off_refuses_before_fetching` | `the handler must answer without asking Reddit: Timeout` (run with a dead proxy; an earlier attempt with a timeout on the handler's own thread hung for 25 minutes because the fetch blocks in `OAUTH_CLIENT`'s initialiser) |
+| M4.2 | `rss_feeds_subreddit_listing_is_fetched_as_raw_json` | `left: "/r/rust/top.json?t=week" right: "/r/rust/top.json?t=week&raw_json=1"` |
+| M4.2 | `rss_feeds_subreddit_feed_keeps_text_as_the_visitor_wrote_it` | content was `<div class="md"><p>I typed <img src=x> & left</p></div>` |
+| M4.2 | `rss_feeds_user_feed_has_a_link_and_keeps_typed_text_as_text` | `left: "" right: "https://redlib.example/user/spez"` |
+| M4.3 | `search_encoding_and_comments_subreddit_lookup_encodes_the_query` | `/subreddits/search.json?q=C+++&+AT&T+#1+100%+"x"&limit=3` |
+| M4.3 | `search_encoding_and_comments_params_keep_the_query_as_raw_text` | `left: "say &quot;hi&quot;"` |
+| M4.3 | `search_encoding_and_comments_links_carry_the_encoded_query` | `all: every link carries the encoded query: left: 0 right: 3` |
+| M4.3 | `search_encoding_and_comments_query_is_html_escaped_once_where_shown` | `search box` (the raw `"` ended the `value` attribute) |
+| M4.3 | `search_encoding_and_comments_matches_text_not_markup` | `href is markup, not comment text: left: ["link"] right: []` |
+| M4.4 | `rewrite_emotes_pairs_each_emote_with_its_own_link_and_size` | first emote rendered as `Second.png` at `width="300"`, `:2029:` left as text |
+| M4.5 | `flair_gallery_and_prefs_versioning_links_{listing,post,duplicates}_flair_search_encodes_the_flair` | `q=flair_name%3A%22C# &#38; 100%%22&restrict_sr=on` |
+| M4.5 | `flair_gallery_and_prefs_versioning_links_wall_form_returns_to_the_full_url` | `left: "/r/edgy?sort=new" right: "/r/edgy?sort=new&t=week"` |
+| M4.5 | `flair_gallery_and_prefs_versioning_links_nsfw_bypass_returns_to_the_full_url` | `left: "/r/rust/comments/abc/post/?sort=new"`, tail after `&` lost |
+| M4.5 | `flair_gallery_and_prefs_versioning_gallery_skips_invalid_items` | items `("failed upload", "")` and `("no metadata", "")` present |
+| M4.5 | `flair_gallery_and_prefs_versioning_prefs_export_round_trips_with_a_version_header` | `an export names its version` |
+| M4.5 | `flair_gallery_and_prefs_versioning_prefs_malformed_exports_are_errors` | `Failed to deserialize bytes into Preferences struct: io error:` (version 99 accepted as bare bincode) |
+| M4.5 | `..._prefs_known_good_v1_exports_still_decode`, `..._prefs_encoded_restore_accepts_v1_and_current_exports` | pass before and after by design: they pin the v1 format and `KNOWN_GOOD_CONFIGS` |
+
+### Corrections to the plan
+
+- Plan: `SearchParams.q_enc`. Done instead: `|urlencode_strict` in the templates.
+- Plan: `Preferences` "versioned serialisation" via `revision`. Done instead: explicit `RLP` + version byte header with bincode (research #49 allows either). `revision` 0.17.1 sizes buffers from lengths in its input, which is unsafe for a user-supplied import string.
+- Finding numbering: the task brief lists the settings versioning as #50; in `research.md` it is #49 and the gallery fix is #50. Both are done.
+- `rewrite_emotes` also fixed a latent oddity: the old pattern captured the JSON quote that closed `src`; the new code writes that quote itself.
+
+### Not verified
+
+- The live paths of `subreddit::rss`, `user::rss` (with `REDLIB_ENABLE_RSS=on`), `search::find` and `post::item` need live Reddit. Their pure parts (feed bodies, `feed_path`, `search_params`, `subreddit_search_path`, `query_comments`) are tested.
+- `/r/:sub/w/*page` is tested through the real route table, but only the redirect, not the wiki page it leads to.
+- `redirect_url` in `subreddit.rs` and `user.rs` (built with `replace`) and the comment-search query parsing in `post::item` (`COMMENT_SEARCH_CAPTURE`, `%20` and `+` only) were not in this finding's list and are unchanged. A `%26` or `%2B` already in the page URL still reaches those redirect links decoded.
+- The settings page's export box and the browser's use of it were not exercised in a browser.
+- No browser check of the encoded links; they were verified by round trips through the real handlers (`add_quarantine_exception`, `settings::update`) instead.
