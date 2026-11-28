@@ -272,15 +272,15 @@ impl RequestExt for Request<Body> {
 }
 
 impl ResponseExt for Response<Body> {
+	/// The cookies this response sets, from its `Set-Cookie` headers.
 	fn cookies(&self) -> Vec<Cookie<'_>> {
-		self.headers().get("Cookie").map_or(Vec::new(), |header| {
-			header
-				.to_str()
-				.unwrap_or_default()
-				.split("; ")
-				.map(|cookie| Cookie::parse(cookie).unwrap_or_else(|_| Cookie::from("")))
-				.collect()
-		})
+		self
+			.headers()
+			.get_all(header::SET_COOKIE)
+			.iter()
+			.filter_map(|header| header.to_str().ok())
+			.filter_map(|set_cookie| Cookie::parse(set_cookie).ok())
+			.collect()
 	}
 
 	fn insert_cookie(&mut self, cookie: Cookie<'_>) {
@@ -1101,6 +1101,21 @@ mod tests {
 				assert!(!line.contains(secret), "log line leaks {secret}: {line}");
 			}
 		}
+	}
+
+	#[test]
+	fn vary_singleflight_and_cookies_response_cookies_reads_set_cookie() {
+		let mut res = Response::new(Body::empty());
+		res.insert_cookie(Cookie::build(("theme", "dark")).path("/").build());
+		res.remove_cookie("old".to_string());
+
+		let names: Vec<_> = res.cookies().iter().map(|c| (c.name().to_string(), c.value().to_string())).collect();
+		assert_eq!(names, [("theme".to_string(), "dark".to_string()), ("old".to_string(), String::new())]);
+
+		// A `Cookie` header is a request header; a response does not set cookies with it.
+		let mut request_style = Response::new(Body::empty());
+		request_style.headers_mut().insert(header::COOKIE, header::HeaderValue::from_static("a=1"));
+		assert!(request_style.cookies().is_empty());
 	}
 
 	fn err_route(_: Request<Body>) -> BoxResponse {

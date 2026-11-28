@@ -139,12 +139,16 @@ enum AuthError {
 	Field((serde_json::Value, &'static str)),
 }
 
-/// Describes an authentication failure for logs.
+/// Describes an authentication failure for logs. The raw auth response can
+/// contain the access token, so it is only logged at trace level.
 fn describe_auth_error(error: AuthError) -> String {
 	match error {
 		AuthError::Wreq(error) => error.to_string(),
 		AuthError::SerdeDeserialize(error) => error.to_string(),
-		AuthError::Field((value, error)) => format!("{error}\n{value}"),
+		AuthError::Field((value, error)) => {
+			trace!("Unexpected OAuth response: {value}");
+			format!("unexpected OAuth response: missing or invalid {error}")
+		}
 	}
 }
 
@@ -568,6 +572,14 @@ fn choose<T: Copy>(list: &[T]) -> T {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn auth_errors_never_include_the_access_token() {
+		let response = serde_json::json!({ "access_token": "secret-token-value", "expires_in": "soon" });
+		let message = describe_auth_error(AuthError::Field((response, "expires_in: as_u64")));
+		assert!(message.contains("expires_in"), "{message}");
+		assert!(!message.contains("secret-token-value"), "{message}");
+	}
 
 	#[tokio::test(flavor = "multi_thread")]
 	#[ignore = "requires live Reddit"]
