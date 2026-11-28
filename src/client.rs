@@ -44,8 +44,6 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 // stream being cut off, while a dead upstream is still eventually released.
 const MEDIA_READ_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
-const MAX_REDIRECTS: u8 = 5;
-
 pub static OAUTH_CLIENT: LazyLock<ArcSwap<Oauth>> = LazyLock::new(|| {
 	let client = block_on(Oauth::new());
 	client.record_token_expiry();
@@ -280,12 +278,12 @@ pub async fn proxy(req: HyperRequest<Body>, format: &str) -> Result<HyperRespons
 /// Makes a GET request to Reddit at `path`. By default, this will honor HTTP
 /// 3xx codes Reddit returns and will automatically redirect.
 fn reddit_get(path: String, quarantine: bool) -> Boxed<Result<WreqResponse, String>> {
-	request(&Method::GET, path, true, quarantine, REDDIT_URL_BASE, REDDIT_URL_BASE_HOST, MAX_REDIRECTS)
+	request(&Method::GET, path, true, quarantine, REDDIT_URL_BASE, REDDIT_URL_BASE_HOST)
 }
 
 /// Makes a HEAD request to Reddit at `path, using the short URL base. This will not follow redirects.
 fn reddit_short_head(path: String, quarantine: bool, base_path: &'static str, host: &'static str) -> Boxed<Result<WreqResponse, String>> {
-	request(&Method::HEAD, path, false, quarantine, base_path, host, MAX_REDIRECTS)
+	request(&Method::HEAD, path, false, quarantine, base_path, host)
 }
 
 // /// Makes a HEAD request to Reddit at `path`. This will not follow redirects.
@@ -296,16 +294,8 @@ fn reddit_short_head(path: String, quarantine: bool, base_path: &'static str, ho
 
 /// Makes a request to Reddit. If `redirect` is `true`, `request_with_redirect`
 /// will recurse on the URL that Reddit provides in the Location HTTP header
-/// in its response, following at most `redirects_left` redirects.
-fn request(
-	method: &'static Method,
-	path: String,
-	redirect: bool,
-	quarantine: bool,
-	base_path: &'static str,
-	host: &'static str,
-	redirects_left: u8,
-) -> Boxed<Result<WreqResponse, String>> {
+/// in its response.
+fn request(method: &'static Method, path: String, redirect: bool, quarantine: bool, base_path: &'static str, host: &'static str) -> Boxed<Result<WreqResponse, String>> {
 	// Keep the logical path unchanged for caches and diagnostics. Reddit blocks
 	// literal anonymous comments routes, so only rewrite the outgoing URL.
 	let transport_path = comments_transport_path(&path);
@@ -348,8 +338,40 @@ fn request(
 					if !redirect {
 						return Ok(response);
 					};
-					let next_path = redirect_path(response.headers().get(wreq::header::LOCATION), redirects_left)?;
-					return request(method, next_path, true, quarantine, base_path, host, redirects_left - 1).await;
+					let location_header = response.headers().get(wreq::header::LOCATION);
+					if location_header.and_then(|h| h.to_str().ok()) == Some(ALTERNATIVE_REDDIT_URL_BASE) {
+						return Err("Reddit response was invalid".to_string());
+					}
+					return request(
+						method,
+						location_header
+							.map(|val| {
+								// We need to make adjustments to the URI
+								// we get back from Reddit. Namely, we
+								// must:
+								//
+								//     1. Remove the authority (e.g.
+								//     https://www.reddit.com) that may be
+								//     present, so that we recurse on the
+								//     path (and query parameters) as
+								//     required.
+								//
+								//     2. Percent-encode the path.
+								let new_path = percent_encode(val.as_bytes(), CONTROLS)
+									.to_string()
+									.trim_start_matches(REDDIT_URL_BASE)
+									.trim_start_matches(ALTERNATIVE_REDDIT_URL_BASE)
+									.to_string();
+								format!("{new_path}{}raw_json=1", if new_path.contains('?') { "&" } else { "?" })
+							})
+							.unwrap_or_default()
+							.to_string(),
+						true,
+						quarantine,
+						base_path,
+						host,
+					)
+					.await;
 				};
 
 				Ok(response)
@@ -362,27 +384,6 @@ fn request(
 		}
 	}
 	.boxed()
-}
-
-/// Turns a Reddit `Location` header into the next path to request, or
-/// explains why the redirect cannot be followed.
-fn redirect_path(location: Option<&wreq_header::HeaderValue>, redirects_left: u8) -> Result<String, String> {
-	if redirects_left == 0 {
-		return Err("Reddit redirected too many times".to_string());
-	}
-	let location = location.ok_or_else(|| "Reddit redirected without a Location header".to_string())?;
-	if location.to_str().ok() == Some(ALTERNATIVE_REDDIT_URL_BASE) {
-		return Err("Reddit response was invalid".to_string());
-	}
-
-	// Remove the authority (e.g. https://www.reddit.com) so we recurse on the
-	// path and query, and percent-encode the path.
-	let new_path = percent_encode(location.as_bytes(), CONTROLS)
-		.to_string()
-		.trim_start_matches(REDDIT_URL_BASE)
-		.trim_start_matches(ALTERNATIVE_REDDIT_URL_BASE)
-		.to_string();
-	Ok(format!("{new_path}{}raw_json=1", if new_path.contains('?') { "&" } else { "?" }))
 }
 
 /// Encode one separator in comments API routes to avoid Reddit's anonymous
@@ -800,23 +801,6 @@ mod tests {
 
 		let error = outcome.expect("the client must give up before the test deadline").expect_err("a silent upstream must fail");
 		assert!(error.is_timeout(), "{error}");
-	}
-
-	#[test]
-	fn redirect_path_follows_reddit_locations() {
-		let location = wreq_header::HeaderValue::from_static("https://oauth.reddit.com/r/rust/about.json");
-		assert_eq!(redirect_path(Some(&location), MAX_REDIRECTS), Ok("/r/rust/about.json?raw_json=1".to_string()));
-		let with_query = wreq_header::HeaderValue::from_static("/r/rust/top.json?t=day");
-		assert_eq!(redirect_path(Some(&with_query), 1), Ok("/r/rust/top.json?t=day&raw_json=1".to_string()));
-	}
-
-	#[test]
-	fn redirect_path_rejects_missing_location_and_exhausted_hops() {
-		let location = wreq_header::HeaderValue::from_static("/r/rust/about.json");
-		assert!(redirect_path(None, MAX_REDIRECTS).is_err(), "a redirect without Location cannot be followed");
-		assert!(redirect_path(Some(&location), 0).is_err(), "no redirects remain");
-		let homepage = wreq_header::HeaderValue::from_static("https://www.reddit.com");
-		assert!(redirect_path(Some(&homepage), MAX_REDIRECTS).is_err());
 	}
 
 	#[test]

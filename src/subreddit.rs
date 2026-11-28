@@ -2,8 +2,8 @@
 
 use crate::utils;
 use crate::utils::{
-	catch_random, error, filter_posts, format_num, format_url, gating_metadata, get_filters, html_page, info, nsfw_landing, param, redirect, rewrite_urls, setting, sfw_only,
-	template, to_absolute_url, val, Post, Preferences, Subreddit,
+	catch_random, error, filter_posts, format_num, format_url, gating_metadata, get_filters, info, nsfw_landing, param, redirect, rewrite_urls, setting, sfw_only, template,
+	to_absolute_url, val, Post, Preferences, Subreddit,
 };
 use crate::{client::json, server::RequestExt, server::ResponseExt};
 use askama::Template;
@@ -212,7 +212,11 @@ pub fn quarantine(req: &Request<Body>, sub: String, restriction: &str) -> Respon
 		prefs: Preferences::new(req),
 	};
 
-	html_page(wall.render(), 403)
+	Response::builder()
+		.status(403)
+		.header("content-type", "text/html")
+		.body(wall.render().unwrap_or_default().into())
+		.unwrap_or_default()
 }
 
 pub async fn add_quarantine_exception(req: Request<Body>) -> Result<Response<Body>, String> {

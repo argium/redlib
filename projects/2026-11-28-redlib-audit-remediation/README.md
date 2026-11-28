@@ -39,3 +39,7 @@ All 7 slices are implemented and open as stacked draft PRs (argium/redlib#1–#7
 ## References
 
 - Upstream: [redlib-org/redlib](https://github.com/redlib-org/redlib)
+
+## Dropped after review
+
+Items #1, #9, #14 and #39 of [research.md](./research.md) were dropped as speculative; the task and plan files still describe them as originally planned. Their code was reverted, except the `RolloverGuard` and the spawned `401` refresh from #1, which the #2 refresh cooldown depends on. See [intent.md](./intent.md).

@@ -838,7 +838,7 @@ impl StaticBody {
 /// Replaces the body of `res` with its compressed form and sets `Content-Encoding`.
 ///
 /// Compression runs on the blocking thread pool so it cannot stall the async workers
-/// that serve other requests. If it fails, `res` keeps its original body and headers.
+/// that serve other requests.
 async fn compress_body_in_place(res: &mut Response<Body>, compressor: CompressionType) -> Result<(), String> {
 	let body_bytes = match body::to_bytes(res.body_mut()).await {
 		Ok(bytes) => bytes,
@@ -848,9 +848,7 @@ async fn compress_body_in_place(res: &mut Response<Body>, compressor: Compressio
 		}
 	};
 
-	// `Bytes` clones share one buffer, so keeping the original for the error path is free.
-	let to_compress = body_bytes.clone();
-	let compressed = match tokio::task::spawn_blocking(move || compress_body_blocking(compressor, &to_compress)).await {
+	let compressed = match tokio::task::spawn_blocking(move || compress_body_blocking(compressor, &body_bytes)).await {
 		Ok(result) => result,
 		Err(e) => Err(e.to_string()),
 	};
@@ -866,10 +864,7 @@ async fn compress_body_in_place(res: &mut Response<Body>, compressor: Compressio
 			*(res.body_mut()) = Body::from(compressed);
 			Ok(())
 		}
-		Err(e) => {
-			*(res.body_mut()) = Body::from(body_bytes);
-			Err(e)
-		}
+		Err(e) => Err(e),
 	}
 }
 
@@ -1221,28 +1216,6 @@ mod tests {
 		compress_response(&headers_accepting("gzip"), &mut res).await.unwrap();
 		assert_eq!(res.headers()[header::CONTENT_ENCODING], "br", "an encoded body must not be encoded twice");
 		assert_eq!(body::to_bytes(res.body_mut()).await.unwrap().len(), 4000);
-	}
-
-	#[tokio::test]
-	async fn compress_response_restores_the_body_when_compression_fails() {
-		let original = lipsum(1000);
-		let mut res = Response::builder()
-			.status(200)
-			.header(header::CONTENT_TYPE, "text/plain")
-			.body(Body::from(original.clone()))
-			.unwrap();
-
-		// Passthrough has no encoder, so compressing with it always fails.
-		let result = compress_body_in_place(&mut res, CompressionType::Passthrough).await;
-
-		assert!(result.is_err());
-		assert!(res.headers().get(header::CONTENT_ENCODING).is_none());
-		let body = body::to_bytes(res.body_mut()).await.unwrap();
-		assert!(
-			body == original.as_bytes(),
-			"the response body was dropped after a compression error ({} bytes left)",
-			body.len()
-		);
 	}
 
 	#[tokio::test(flavor = "current_thread")]

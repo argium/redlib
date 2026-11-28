@@ -55,3 +55,4 @@ Session prompts (2026-11-28):
 - **2026-11-28 (session, agreed):** Commit without signing when signing is unavailable ("skip commit sign when applicable").
 - **2026-11-28 (orchestrator, reversible):** MSRV recorded as Rust 1.89, the oldest toolchain that builds the locked dependencies; `flake.nix` pins it.
 - **2026-11-28 (session, agreed):** Leave `flake.nix` untouched (Nix is not used here).
+- **2026-11-28 (session, agreed):** Drop four speculative items from the PR: #1 (stuck rollover flag; no realistic trigger, so the PR no longer lists it), #9 (redirect hop cap; needs Reddit to redirect without `Location`), #14 (restore body when compression fails; in-memory gzip/brotli does not fail in practice) and #39 (log render errors; Askama render failures are compile-time checked). The code for #9, #14 and #39 was reverted. The `RolloverGuard` and the spawned `401` refresh stay, because #2's refresh cooldown needs them.

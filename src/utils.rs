@@ -1465,29 +1465,17 @@ pub fn val(j: &Value, k: &str) -> String {
 //
 
 pub fn template(t: &impl Template) -> Response<Body> {
-	html_page(t.render(), 200)
+	Response::builder()
+		.status(200)
+		.header("content-type", "text/html")
+		.body(t.render().unwrap_or_default().into())
+		.unwrap_or_default()
 }
 
 /// True when a listing has a post with an HLS stream, which is the only reason to load
 /// the 412 KB `hls.min.js`.
 pub fn any_hls_video(posts: &[Post]) -> bool {
 	posts.iter().any(|post| !post.media.alt_url.is_empty())
-}
-
-/// Turns a render result into an HTML response with `status`. A failed render is
-/// logged and answered with a plain-text `500`, so it never becomes a blank page.
-pub fn html_page(rendered: askama::Result<String>, status: u16) -> Response<Body> {
-	match rendered {
-		Ok(html) => Response::builder().status(status).header("content-type", "text/html").body(html.into()).unwrap_or_default(),
-		Err(e) => {
-			error!("Template render failed: {e}");
-			Response::builder()
-				.status(500)
-				.header("content-type", "text/plain")
-				.body(Body::from("Internal Server Error: this page could not be rendered"))
-				.unwrap_or_default()
-		}
-	}
 }
 
 /// Returns `path` when it is a same-site path, otherwise `/`. A single leading
@@ -1519,27 +1507,29 @@ pub fn redirect(path: &str) -> Response<Body> {
 pub async fn error(req: Request<Body>, msg: &str) -> Result<Response<Body>, String> {
 	error!("Error page rendered: {}", msg.split('|').next().unwrap_or_default());
 	let url = req.uri().to_string();
-	let rendered = ErrorTemplate {
+	let body = ErrorTemplate {
 		msg: msg.to_string(),
 		prefs: Preferences::new(&req),
 		url,
 	}
-	.render();
+	.render()
+	.unwrap_or_default();
 
-	Ok(html_page(rendered, 404))
+	Ok(Response::builder().status(404).header("content-type", "text/html").body(body.into()).unwrap_or_default())
 }
 
 /// Renders a generic info landing page.
 pub async fn info(req: Request<Body>, msg: &str) -> Result<Response<Body>, String> {
 	let url = req.uri().to_string();
-	let rendered = InfoTemplate {
+	let body = InfoTemplate {
 		msg: msg.to_string(),
 		prefs: Preferences::new(&req),
 		url,
 	}
-	.render();
+	.render()
+	.unwrap_or_default();
 
-	Ok(html_page(rendered, 200))
+	Ok(Response::builder().status(200).header("content-type", "text/html").body(body.into()).unwrap_or_default())
 }
 
 /// Resolves the metadata lookup that decides whether a page is NSFW. Outside
@@ -1614,15 +1604,16 @@ pub async fn nsfw_landing(req: Request<Body>, req_url: String) -> Result<Respons
 		req.param("sub").unwrap_or_default()
 	};
 
-	let rendered = NSFWLandingTemplate {
+	let body = NSFWLandingTemplate {
 		res: resource,
 		res_type,
 		prefs: Preferences::new(&req),
 		url: req_url,
 	}
-	.render();
+	.render()
+	.unwrap_or_default();
 
-	Ok(html_page(rendered, 403))
+	Ok(Response::builder().status(403).header("content-type", "text/html").body(body.into()).unwrap_or_default())
 }
 
 /// Returns the last (non-empty) segment of a path string
@@ -1732,34 +1723,12 @@ pub fn absolute_url(base_url: &str, url: &str) -> String {
 #[cfg(test)]
 mod tests {
 	use super::{
-		absolute_url, deflate_compress, deflate_decompress_limited, format_num, format_url, gating_metadata, html_page, nsfw_landing, read_body_limited, redirect,
-		render_bullet_lists, request_base_url, rewrite_emotes, rewrite_urls, should_be_nsfw_gated, url_path_basename, Post, Preferences,
+		absolute_url, deflate_compress, deflate_decompress_limited, format_num, format_url, gating_metadata, nsfw_landing, read_body_limited, redirect, render_bullet_lists,
+		request_base_url, rewrite_emotes, rewrite_urls, should_be_nsfw_gated, url_path_basename, Post, Preferences,
 	};
 	use crate::server::RequestExt;
 	use hyper::{Body, Request};
 	use sealed_test::prelude::*;
-
-	#[tokio::test]
-	async fn panic_and_render_errors_failed_render_is_a_500() {
-		let response = html_page(Err(askama::Error::Fmt), 200);
-
-		assert_eq!(response.status(), 500);
-		assert_eq!(response.headers()["content-type"], "text/plain");
-		let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
-		assert!(
-			!body.is_empty() && !body.starts_with(b"<"),
-			"the fallback must be a plain-text message, not a blank or HTML page"
-		);
-	}
-
-	#[tokio::test]
-	async fn panic_and_render_errors_successful_render_keeps_its_status() {
-		let response = html_page(Ok("<p>x</p>".to_string()), 403);
-
-		assert_eq!(response.status(), 403);
-		assert_eq!(response.headers()["content-type"], "text/html");
-		assert_eq!(hyper::body::to_bytes(response.into_body()).await.unwrap(), "<p>x</p>");
-	}
 
 	fn request_with(headers: &[(&str, &str)]) -> Request<Body> {
 		let mut builder = Request::get("/opensearch.xml");
