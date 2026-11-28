@@ -51,7 +51,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # Keep in step with rust-version in Cargo.toml and the toolchain in flake.nix.
+      # Keep in step with rust-version in Cargo.toml.
       - name: Install the minimum supported toolchain
         uses: dtolnay/rust-toolchain@d92bbbb03544f480ed5c7ba4b54020e4ed2c4f65 # 1.89.0 branch tip
         with:

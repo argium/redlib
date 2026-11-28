@@ -54,3 +54,4 @@ Session prompts (2026-11-28):
 - **2026-11-28 (session, agreed):** Every milestone requires verification evidence and a regression unit test that fails before the fix and passes after it.
 - **2026-11-28 (session, agreed):** Commit without signing when signing is unavailable ("skip commit sign when applicable").
 - **2026-11-28 (orchestrator, reversible):** MSRV recorded as Rust 1.89, the oldest toolchain that builds the locked dependencies; `flake.nix` pins it.
+- **2026-11-28 (session, agreed):** Leave `flake.nix` untouched (Nix is not used here).

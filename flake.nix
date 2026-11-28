@@ -14,7 +14,7 @@
     };
   };
 
-  outputs = { self, nixpkgs, crane, flake-utils, rust-overlay, ... }:
+  outputs = { nixpkgs, crane, flake-utils, rust-overlay, ... }:
     flake-utils.lib.eachSystem [ "x86_64-linux" ] (system:
       let
         pkgs = import nixpkgs {
@@ -24,8 +24,7 @@
 
         inherit (pkgs) lib;
 
-        # Matches `rust-version` in Cargo.toml, so the flake builds with the oldest supported toolchain.
-        rustToolchain = pkgs.rust-bin.stable."1.89.0".default.override {
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
           targets = [ "x86_64-unknown-linux-musl" ];
         };
 
@@ -37,18 +36,13 @@
           filter = path: type:
             (lib.hasInfix "/templates/" path) ||
             (lib.hasInfix "/static/" path) ||
-            # config.rs tests read app.json with include_str!
-            (baseNameOf path == "app.json") ||
             (craneLib.filterCargoSources path type);
         };
 
         redlib = craneLib.buildPackage {
           inherit src;
           strictDeps = true;
-          doCheck = true;
-
-          # The source filter drops .git, so build.rs cannot ask git for the commit.
-          GIT_HASH = self.rev or "dev";
+          doCheck = false;
 
           CARGO_BUILD_TARGET = "x86_64-unknown-linux-musl";
           CARGO_BUILD_RUSTFLAGS = "-C target-feature=+crt-static";
