@@ -144,10 +144,7 @@ fn describe_auth_error(error: AuthError) -> String {
 	match error {
 		AuthError::Wreq(error) => error.to_string(),
 		AuthError::SerdeDeserialize(error) => error.to_string(),
-		AuthError::Field((value, error)) => format!(
-			"{error}
-{value}"
-		),
+		AuthError::Field((value, error)) => format!("{error}\n{value}"),
 	}
 }
 
