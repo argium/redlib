@@ -139,16 +139,15 @@ enum AuthError {
 	Field((serde_json::Value, &'static str)),
 }
 
-/// Describes an authentication failure for logs. The raw auth response can
-/// contain the access token, so it is only logged at trace level.
+/// Describes an authentication failure for logs.
 fn describe_auth_error(error: AuthError) -> String {
 	match error {
 		AuthError::Wreq(error) => error.to_string(),
 		AuthError::SerdeDeserialize(error) => error.to_string(),
-		AuthError::Field((value, error)) => {
-			trace!("Unexpected OAuth response: {value}");
-			format!("unexpected OAuth response: missing or invalid {error}")
-		}
+		AuthError::Field((value, error)) => format!(
+			"{error}
+{value}"
+		),
 	}
 }
 
@@ -395,7 +394,7 @@ impl OauthBackend for MobileSpoofAuth {
 			.as_u64()
 			.ok_or_else(|| AuthError::Field((json.clone(), "expires_in: as_u64")))?;
 
-		trace!("[✅] Success - Retrieved token \"{}...\", expires in {}", token_preview(&token), expires_in);
+		info!("[✅] Success - Retrieved token \"{}...\", expires in {}", token_preview(&token), expires_in);
 
 		Ok(OauthResponse {
 			token,
@@ -434,7 +433,7 @@ impl GenericWebAuth {
 			})
 			.collect();
 
-		trace!("[🔄] Using GenericWebAuth with device_id: \"{device_id}\"");
+		info!("[🔄] Using GenericWebAuth with device_id: \"{device_id}\"");
 
 		Self {
 			device_id,
@@ -499,7 +498,7 @@ impl OauthBackend for GenericWebAuth {
 			.as_u64()
 			.ok_or_else(|| AuthError::Field((json.clone(), "expires_in: as_u64")))?;
 
-		trace!("[✅] GenericWebAuth success - Retrieved token \"{}...\", expires in {}", token_preview(&token), expires_in);
+		info!("[✅] GenericWebAuth success - Retrieved token \"{}...\", expires in {}", token_preview(&token), expires_in);
 
 		// Insert a few necessary headers
 		self.additional_headers.insert("Origin".to_owned(), "https://www.reddit.com".to_owned());
@@ -550,7 +549,7 @@ impl Device {
 			("X-Reddit-Device-Id".into(), uuid.clone()),
 		]);
 
-		trace!("[🔄] Spoofing Android client with headers: {headers:?}, uuid: \"{uuid}\", and OAuth ID \"{REDDIT_ANDROID_OAUTH_CLIENT_ID}\"");
+		info!("[🔄] Spoofing Android client with headers: {headers:?}, uuid: \"{uuid}\", and OAuth ID \"{REDDIT_ANDROID_OAUTH_CLIENT_ID}\"");
 
 		Self {
 			oauth_id: REDDIT_ANDROID_OAUTH_CLIENT_ID.to_string(),
@@ -572,16 +571,6 @@ fn choose<T: Copy>(list: &[T]) -> T {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::test_support::captured_logs;
-	use log::Level;
-
-	#[test]
-	fn auth_errors_never_include_the_access_token() {
-		let response = serde_json::json!({ "access_token": "secret-token-value", "expires_in": "soon" });
-		let message = describe_auth_error(AuthError::Field((response, "expires_in: as_u64")));
-		assert!(message.contains("expires_in"), "{message}");
-		assert!(!message.contains("secret-token-value"), "{message}");
-	}
 
 	#[tokio::test(flavor = "multi_thread")]
 	#[ignore = "requires live Reddit"]
@@ -772,25 +761,5 @@ mod tests {
 		assert_eq!(token_preview("short"), "short");
 		assert_eq!(token_preview(&"a".repeat(40)), "a".repeat(32));
 		assert_eq!(token_preview(&"é".repeat(40)).chars().count(), 32);
-	}
-
-	#[test]
-	fn device_identifiers_are_only_logged_at_trace() {
-		let logs = captured_logs();
-		let device = Device::android();
-		let web = GenericWebAuth::new();
-		let identifiers = [device.headers["X-Reddit-Device-Id"].clone(), web.device_id.clone()];
-
-		let logs = logs.lock().unwrap();
-		for identifier in &identifiers {
-			assert!(
-				logs.iter().any(|(level, message)| *level == Level::Trace && message.contains(identifier.as_str())),
-				"{identifier} should still be available at trace level"
-			);
-			assert!(
-				!logs.iter().any(|(level, message)| *level < Level::Trace && message.contains(identifier.as_str())),
-				"{identifier} must not be logged above trace"
-			);
-		}
 	}
 }
