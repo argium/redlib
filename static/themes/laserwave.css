@@ -1,6 +1,6 @@
 /* Laserwave theme setting */
 .laserwave {
-	--accent: #eb64b9;
+	--accent: #ee7bc3;
 	--green: #74dfc4;
 	--text: #e0dfe1;
 	--foreground: #302a36;
@@ -9,6 +9,12 @@
 	--post: #3e3647;
 	--panel-border: 2px solid #2f2738;
 	--highlighted: #302a36;
-	--visited: #91889b;
+	--visited: #afacb3;
+	--muted: #a5a2a8;
 	--shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+html:has(> .laserwave) {
+	/* Scrollbars and native controls follow the theme, not the OS scheme */
+	color-scheme: dark;
 }

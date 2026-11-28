@@ -2,7 +2,6 @@ name: Pull Request
 
 env:
   CARGO_TERM_COLOR: always
-  NEXTEST_RETRIES: 10
 
 on:
   push:
@@ -12,25 +11,70 @@ on:
   pull_request:
     branches:
       - 'main'
-    
+
+permissions:
+  contents: read
+
 jobs:
   test:
-    name: cargo test
+    name: cargo nextest run --locked
     runs-on: ubuntu-latest
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v3
-      
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: stable
-      
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
 
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@073e1fd0bc889c9aee68dbaaa927cde1b5653a83 # v2.90.11
+        with:
+          tool: nextest
+
+      # Tests that need live Reddit are #[ignore]d, so a failure here is a real failure: no retries.
       - name: Run cargo nextest
-        run: cargo nextest run
+        run: cargo nextest run --locked
+
+  msrv:
+    name: cargo check on the minimum supported Rust (1.89)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Keep in step with rust-version in Cargo.toml.
+      - name: Install the minimum supported toolchain
+        uses: dtolnay/rust-toolchain@d92bbbb03544f480ed5c7ba4b54020e4ed2c4f65 # 1.89.0 branch tip
+        with:
+          toolchain: 1.89.0
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
+      - name: Run cargo check
+        run: cargo check --locked --all-targets
+
+  scripts:
+    name: node --test tests/js
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The shell expands the glob, which works on every Node version the runner may default to.
+      - name: Run the static script tests
+        run: node --test tests/js/*.test.js
 
   format:
     name: cargo fmt --all -- --check
@@ -38,10 +82,12 @@ jobs:
 
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v3
-      
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Install stable toolchain with rustfmt component
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: stable
           components: rustfmt
@@ -50,18 +96,62 @@ jobs:
         run: cargo fmt --all -- --check
 
   clippy:
-    name: cargo clippy -- -D warnings
+    name: cargo clippy --locked --all-targets -- -D warnings
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout sources
-        uses: actions/checkout@v3
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install stable toolchain with clippy component
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
         with:
           toolchain: stable
           components: clippy
 
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+
       - name: Run cargo clippy
-        run: cargo clippy -- -D warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+  audit:
+    name: cargo deny check advisories
+    runs-on: ubuntu-latest
+    # Advisory only: the locked dependencies already carry RustSec findings (h2, url, cookie,
+    # zstd, pulldown-cmark). Remove continue-on-error once `cargo update` clears them.
+    continue-on-error: true
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@073e1fd0bc889c9aee68dbaaa927cde1b5653a83 # v2.90.11
+        with:
+          tool: cargo-deny
+
+      - name: Check the locked dependencies against the RustSec database
+        run: cargo deny --locked check advisories
+
+  container:
+    name: musl container smoke build
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build the Alpine image from source
+        run: docker build --file Dockerfile.alpine --build-arg "GIT_HASH=${GITHUB_SHA}" --tag redlib:pull-request .
+
+      # A static musl binary that starts under Alpine; /healthz needs live Reddit, so it is not probed.
+      - name: Run the image
+        run: docker run --rm redlib:pull-request redlib --version

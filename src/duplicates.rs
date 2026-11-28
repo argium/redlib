@@ -234,3 +234,50 @@ async fn parse_duplicates(json: &Value, filters: &HashSet<String>) -> (Vec<Post>
 	let (num_posts_filtered, all_posts_filtered) = filter_posts(&mut duplicates, filters);
 	(duplicates, num_posts_filtered, all_posts_filtered)
 }
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::test_support::{flair_search_links, flaired_post, AWKWARD_FLAIR_SEARCH_LINK};
+
+	async fn duplicates_page() -> String {
+		let mut original = flaired_post().await;
+		original.num_duplicates = 1;
+		DuplicatesTemplate {
+			params: DuplicatesParams {
+				before: String::new(),
+				after: String::new(),
+				sort: String::new(),
+			},
+			post: original,
+			duplicates: vec![flaired_post().await],
+			prefs: Preferences::default(),
+			url: "/r/test/duplicates/f1".to_string(),
+			num_posts_filtered: 0,
+			all_posts_filtered: false,
+		}
+		.render()
+		.unwrap()
+	}
+
+	#[tokio::test]
+	async fn flair_gallery_and_prefs_versioning_links_duplicates_flair_search_encodes_the_flair() {
+		// Once on the original post and once on its duplicate.
+		assert_eq!(flair_search_links(&duplicates_page().await), [AWKWARD_FLAIR_SEARCH_LINK; 2]);
+	}
+
+	#[tokio::test]
+	async fn html_markup_and_highlighted_duplicates_page_has_valid_markup() {
+		crate::html_checks::assert_valid_markup("duplicates", &duplicates_page().await);
+	}
+
+	#[tokio::test]
+	async fn a11y_markup_duplicates_page_has_a_skip_link_main_and_one_h1() {
+		crate::html_checks::assert_landmarks("duplicates", &duplicates_page().await);
+	}
+
+	#[tokio::test]
+	async fn template_a11y_and_html_duplicates_page_is_accessible() {
+		crate::html_checks::assert_accessible("duplicates", &duplicates_page().await);
+	}
+}

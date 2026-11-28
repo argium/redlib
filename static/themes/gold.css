@@ -10,5 +10,11 @@
 	--panel-border: 0px solid black;
 	--highlighted: #234;
 	--visited: #aaa;
+	--muted: #9fa3a6;
 	--shadow: 0 2px 5px rgba(0, 0, 0, 0.5);
+}
+
+html:has(> .gold) {
+	/* Scrollbars and native controls follow the theme, not the OS scheme */
+	color-scheme: dark;
 }

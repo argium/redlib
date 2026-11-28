@@ -6,7 +6,7 @@
 		<h1>{{ title }}</h1>
 		<br>
 		<p>{{ msg }}</p>
-		<form action="/r/{{ sub }}?redir={{ url }}" method="POST">
+		<form action="/r/{{ sub }}?redir={{ url|urlencode_strict }}" method="POST">
 			<input id="save" type="submit" value="Continue">
 		</form>
 	</div>

@@ -38,10 +38,13 @@
     "REDLIB_DEFAULT_BLUR_NSFW": {
       "required": false
     },
-    "REDLIB_USE_HLS": {
+    "REDLIB_DEFAULT_USE_HLS": {
       "required": false
     },
-    "REDLIB_HIDE_HLS_NOTIFICATION": {
+    "REDLIB_DEFAULT_HIDE_HLS_NOTIFICATION": {
+      "required": false
+    },
+    "REDLIB_DEFAULT_AUTOPLAY_VIDEOS": {
       "required": false
     },
     "REDLIB_SFW_ONLY": {

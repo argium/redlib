@@ -13,6 +13,10 @@
 
 {% block content %}
 <div id="settings">
+	<h1 class="visually-hidden">Settings</h1>
+	{% if let Some(notice) = notice %}
+	<p id="settings_notice" class="settings_notice{% if notice.is_error() %} settings_notice_error{% endif %}" role="{% if notice.is_error() %}alert{% else %}status{% endif %}">{{ notice.message() }}</p>
+	{% endif %}
 	<form action="/settings" method="POST">
 		<div class="prefs">
 			<fieldset>
@@ -20,7 +24,9 @@
 				<div class="prefs-group">
 					<label for="theme">Theme:</label>
 					<select name="theme" id="theme">
-						{% call utils::options(prefs.theme, prefs.available_themes, "system") %}
+						{% for theme in prefs.available_themes %}
+						<option value="{{ theme }}" {% if prefs.theme == theme.to_string() || (prefs.theme == "" && theme == "system") %}selected{% endif %}>{{ crate::utils::theme_label(theme) }}</option>
+						{% endfor %}
 					</select>
 				</div>
 			</fieldset>
@@ -60,7 +66,7 @@
 				</div>
 				<div class="prefs-group">
 					<label for="post_sort" title="Applies only to subreddit feeds">Default subreddit post sort:</label>
-					<select name="post_sort">
+					<select name="post_sort" id="post_sort">
 						{% call utils::options(prefs.post_sort, ["hot", "new", "top", "rising", "controversial"], "hot")
 						%}
 					</select>
@@ -101,19 +107,19 @@
 				<div class="prefs-group">
 					<label for="fixed_navbar">Keep navbar fixed</label>
 					<input type="hidden" value="off" name="fixed_navbar">
-					<input type="checkbox" name="fixed_navbar" {% if prefs.fixed_navbar=="on" %}checked{% endif %}>
+					<input type="checkbox" name="fixed_navbar" id="fixed_navbar" {% if prefs.fixed_navbar=="on" %}checked{% endif %}>
 				</div>
 				<div class="prefs-group">
 					<label for="hide_sidebar_and_summary">Hide the summary and sidebar</label>
 					<input type="hidden" value="off" name="hide_sidebar_and_summary">
-					<input type="checkbox" name="hide_sidebar_and_summary" {% if prefs.hide_sidebar_and_summary=="on"
+					<input type="checkbox" name="hide_sidebar_and_summary" id="hide_sidebar_and_summary" {% if prefs.hide_sidebar_and_summary=="on"
 						%}checked{% endif %}>
 				</div>
 				<div class="prefs-group">
 					<label for="use_hls">Use HLS for videos</label>
-					<details id="feeds">
+					<details>
 						<summary>Why?</summary>
-						<div id="feed_list" class="helper">Reddit videos require JavaScript (via HLS.js) to be enabled
+						<div class="helper">Reddit videos require JavaScript (via HLS.js) to be enabled
 							to be played with audio. Therefore, this toggle lets you either use Redlib JS-free or
 							utilize this feature.</div>
 					</details>
@@ -142,16 +148,20 @@
 					<label for="disable_visit_reddit_confirmation">Do not confirm before visiting content on
 						Reddit</label>
 					<input type="hidden" value="off" name="disable_visit_reddit_confirmation">
-					<input type="checkbox" name="disable_visit_reddit_confirmation" {% if
+					<input type="checkbox" name="disable_visit_reddit_confirmation" id="disable_visit_reddit_confirmation" {% if
 						prefs.disable_visit_reddit_confirmation=="on" %}checked{% endif %}>
 				</div>
 			</fieldset>
 			<input id="save" type="submit" value="Save">
 		</div>
 	</form>
+	<form action="/settings" method="POST" id="reset_form">
+		<input type="hidden" name="reset" value="1">
+		<button id="reset" class="unsubscribe" type="submit">Reset to defaults</button>
+	</form>
 	{% if prefs.subscriptions.len() > 0 %}
 	<div class="prefs" id="settings_subs">
-		<legend>Subscribed Feeds</legend>
+		<h2>Subscribed Feeds</h2>
 		{% for sub in prefs.subscriptions %}
 		<div>
 			{% let feed -%}
@@ -167,7 +177,7 @@
 	{% endif %}
 	{% if !prefs.filters.is_empty() %}
 	<div class="prefs" id="settings_filters">
-		<legend>Filtered Feeds</legend>
+		<h2>Filtered Feeds</h2>
 		{% for sub in prefs.filters %}
 		<div>
 			{% let feed -%}
@@ -196,18 +206,19 @@
 		{% endmatch %}
 		<br />
 		<div>
-			<script src="/copy.js"></script>
+			<script src="/copy.js?v={{ crate::assets::version("copy.js") }}"></script>
 			<label for="bincode_str">Or, export/import here (be sure to save first):</label>
 			<br />
 			<input type="text" id="bincode_str" name="bincode_str"
-				value="{% match prefs.to_bincode_str() %}{% when Ok with (bincode_str) %}{{ bincode_str }}{% when Err with (err) %}Error: {{ err }}{% endmatch %}"
+				value="{% match prefs.to_export_string() %}{% when Ok with (bincode_str) %}{{ bincode_str }}{% when Err with (err) %}Error: {{ err }}{% endmatch %}"
 				readonly>
 			<button id="copy" class="copy">Copy</button>
+			<span id="copy_status" role="status"></span>
 
 			<br />
 			<form action="/settings/encoded-restore/" method="POST">
 				<input type="text" id="encoded_prefs" name="encoded_prefs" value=""
-					placeholder="Paste your encoded settings here">
+					placeholder="Paste your encoded settings here" aria-label="Encoded settings to import">
 				<button class="import" type="submit">Import</button>
 			</form>
 		</div>

@@ -1,6 +1,7 @@
 /target
 .env
 redlib.toml
+/dist
 
 # Idea Files
 .idea/

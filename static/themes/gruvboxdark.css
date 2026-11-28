@@ -9,5 +9,12 @@
 	--post: #3c3836;
 	--panel-border: 1px solid #504945;
 	--highlighted: #282828;
+	--visited: #b6aa8d;
+	--muted: #ada286;
 	--shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+html:has(> .gruvboxdark) {
+	/* Scrollbars and native controls follow the theme, not the OS scheme */
+	color-scheme: dark;
 }

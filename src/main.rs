@@ -3,16 +3,19 @@
 #![allow(clippy::cmp_owned)]
 
 use cached::proc_macro::cached;
-use clap::{Arg, ArgAction, Command};
+use clap::{Arg, ArgAction, ArgMatches, Command};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::process::ExitCode;
 use std::sync::LazyLock;
 
+use askama::Template;
 use futures_lite::FutureExt;
 use hyper::{header::HeaderValue, Body, Request, Response};
 use log::{info, warn};
 use redlib::client::{canonical_path, proxy, rate_limit_check, CLIENT};
 use redlib::server::{self, RequestExt};
-use redlib::utils::{error, redirect, ThemeAssets};
-use redlib::{config, duplicates, headers, instance_info, post, search, settings, subreddit, user};
+use redlib::utils::{configured_base_url, error, redirect, request_base_url, OpenSearchTemplate};
+use redlib::{assets, config, duplicates, headers, health, instance_info, post, search, settings, subreddit, user};
 
 use redlib::client::OAUTH_CLIENT;
 
@@ -62,15 +65,27 @@ async fn font() -> Result<Response<Body>, String> {
 	)
 }
 
-async fn opensearch() -> Result<Response<Body>, String> {
-	Ok(
-		Response::builder()
-			.status(200)
-			.header("content-type", "application/opensearchdescription+xml")
-			.header("Cache-Control", "public, max-age=1209600, s-maxage=86400")
-			.body(include_bytes!("../static/opensearch.xml").as_ref().into())
-			.unwrap_or_default(),
-	)
+/// Describes the search form with this instance's own URL. Without `REDLIB_FULL_URL` the URL comes
+/// from the request's `Host` and `X-Forwarded-Proto` headers, so only the requester's own browser
+/// may keep the answer; a shared cache could otherwise serve one visitor's headers to everyone.
+async fn opensearch(req: Request<Body>) -> Result<Response<Body>, String> {
+	let Some(base_url) = request_base_url(&req) else {
+		return Ok(
+			Response::builder()
+				.status(400)
+				.header("content-type", "text/plain")
+				.body("Bad Request: a valid Host header is required".into())
+				.unwrap_or_default(),
+		);
+	};
+	let description = OpenSearchTemplate { base_url }.render().map_err(|e| e.to_string())?;
+	let response = Response::builder().status(200).header("content-type", "application/opensearchdescription+xml");
+	let response = if configured_base_url().is_some() {
+		response.header("Cache-Control", "public, max-age=1209600, s-maxage=86400")
+	} else {
+		response.header("Cache-Control", "private, max-age=300").header("Vary", "Host, X-Forwarded-Proto")
+	};
+	Ok(response.body(description.into()).unwrap_or_default())
 }
 
 async fn resource(body: &str, content_type: &str, cache: bool) -> Result<Response<Body>, String> {
@@ -89,36 +104,40 @@ async fn resource(body: &str, content_type: &str, cache: bool) -> Result<Respons
 	Ok(res)
 }
 
-async fn style() -> Result<Response<Body>, String> {
-	let mut res = include_str!("../static/style.css").to_string();
-	for file in ThemeAssets::iter() {
-		res.push('\n');
-		let theme = ThemeAssets::get(file.as_ref()).unwrap();
-		res.push_str(std::str::from_utf8(theme.data.as_ref()).unwrap());
+/// Parses a boolean flag value. An empty value (`IPV4_ONLY=` from a compose file whose
+/// host variable is unset) counts as false; anything but a boolean word is an error.
+fn parse_flag(value: &str) -> Result<bool, String> {
+	match value.to_ascii_lowercase().as_str() {
+		"" | "n" | "no" | "f" | "false" | "off" | "0" => Ok(false),
+		"y" | "yes" | "t" | "true" | "on" | "1" => Ok(true),
+		_ => Err(format!("`{value}` is not a boolean (use true, false, 1, 0, on, off, yes or no)")),
 	}
-	Ok(
-		Response::builder()
-			.status(200)
-			.header("content-type", "text/css")
-			.header("Cache-Control", "public, max-age=1209600, s-maxage=86400")
-			.body(res.to_string().into())
-			.unwrap_or_default(),
-	)
 }
 
-#[tokio::main]
-async fn main() {
-	// Load environment variables
-	_ = dotenvy::dotenv();
-
-	// Initialize logger
-	pretty_env_logger::init();
-
-	let matches = Command::new("Redlib")
+/// Builds the command line. `-4`/`-6` also read `IPV4_ONLY`/`IPV6_ONLY`, which must be
+/// a boolean (see [`parse_flag`]).
+fn cli() -> Command {
+	Command::new("Redlib")
 		.version(env!("CARGO_PKG_VERSION"))
 		.about("Private front-end for Reddit written in Rust ")
-		.arg(Arg::new("ipv4-only").short('4').long("ipv4-only").help("Listen on IPv4 only").num_args(0))
-		.arg(Arg::new("ipv6-only").short('6').long("ipv6-only").help("Listen on IPv6 only").num_args(0))
+		.arg(
+			Arg::new("ipv4-only")
+				.short('4')
+				.long("ipv4-only")
+				.env("IPV4_ONLY")
+				.value_parser(parse_flag)
+				.help("Listen on IPv4 only")
+				.action(ArgAction::SetTrue),
+		)
+		.arg(
+			Arg::new("ipv6-only")
+				.short('6')
+				.long("ipv6-only")
+				.env("IPV6_ONLY")
+				.value_parser(parse_flag)
+				.help("Listen on IPv6 only")
+				.action(ArgAction::SetTrue),
+		)
 		.arg(
 			Arg::new("redirect-https")
 				.short('r')
@@ -131,8 +150,7 @@ async fn main() {
 				.short('a')
 				.long("address")
 				.value_name("ADDRESS")
-				.help("Sets address to listen on")
-				.default_value("[::]")
+				.help("Sets address to listen on [default: [::], or 0.0.0.0 with -4]")
 				.num_args(1),
 		)
 		.arg(
@@ -147,6 +165,12 @@ async fn main() {
 				.num_args(1),
 		)
 		.arg(
+			Arg::new("healthcheck")
+				.long("healthcheck")
+				.help("Ask the server on --address/--port whether it is healthy (GET /healthz), print ok and exit 0, or exit 1")
+				.action(ArgAction::SetTrue),
+		)
+		.arg(
 			Arg::new("hsts")
 				.short('H')
 				.long("hsts")
@@ -155,54 +179,47 @@ async fn main() {
 				.default_value("604800")
 				.num_args(1),
 		)
-		.get_matches();
+}
 
-	match rate_limit_check().await {
-		Ok(()) => {
-			info!("[✅] Rate limit check passed");
-		}
-		Err(e) => {
-			let mut message = format!("Rate limit check failed: {e}");
-			message += "\nThis may cause issues with the rate limit.";
-			message += "\nPlease report this error with the above information.";
-			message += "\nhttps://github.com/redlib-org/redlib/issues/new?assignees=sigaloid&labels=bug&title=%F0%9F%90%9B+Bug+Report%3A+Rate+limit+mismatch";
-			warn!("{}", message);
-			eprintln!("{message}");
-		}
+fn main() -> ExitCode {
+	// Load environment variables
+	_ = dotenvy::dotenv();
+
+	// Initialize logger
+	pretty_env_logger::init();
+
+	// Parse arguments first so `--help` and `--version` work with a broken redlib.toml.
+	let matches = cli().get_matches();
+
+	let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("Failed to create Tokio runtime");
+
+	// A probe only talks to the local server, so it must not need a valid redlib.toml or Reddit.
+	if matches.get_flag("healthcheck") {
+		return runtime.block_on(healthcheck(&matches));
 	}
 
-	let address = matches.get_one::<String>("address").unwrap();
-	let port = matches.get_one::<String>("port").unwrap();
-	let hsts = matches.get_one("hsts").map(|m: &String| m.as_str());
-
-	let ipv4_only = std::env::var("IPV4_ONLY").is_ok() || matches.get_flag("ipv4-only");
-	let ipv6_only = std::env::var("IPV6_ONLY").is_ok() || matches.get_flag("ipv6-only");
-
-	let listener = if ipv4_only {
-		format!("0.0.0.0:{port}")
-	} else if ipv6_only {
-		format!("[::]:{port}")
-	} else {
-		[address, ":", port].concat()
-	};
-
-	println!("Starting Redlib...");
-
-	// Begin constructing a server
-	let mut app = server::Server::new();
-
-	// Force evaluation of statics. In instance_info case, we need to evaluate
-	// the timestamp so deploy date is accurate - in config case, we need to
-	// evaluate the configuration to avoid paying penalty at first request -
-	// in OAUTH case, we need to retrieve the token to avoid paying penalty
-	// at first request
-
+	// A broken redlib.toml must stop startup before anything else happens.
 	info!("Evaluating config.");
 	LazyLock::force(&config::CONFIG);
-	info!("Evaluating instance info.");
-	LazyLock::force(&instance_info::INSTANCE_INFO);
-	info!("Creating OAUTH client.");
-	LazyLock::force(&OAUTH_CLIENT);
+
+	let exit_code = match runtime.block_on(run(&matches)) {
+		Ok(()) => ExitCode::SUCCESS,
+		Err(message) => {
+			eprintln!("{message}");
+			ExitCode::FAILURE
+		}
+	};
+
+	// Dropping a Tokio runtime waits indefinitely for any running spawn_blocking job (such as
+	// an in-flight Brotli compression). Bound that wait so process exit honours the deadline too.
+	runtime.shutdown_timeout(server::DEFAULT_SHUTDOWN_DEADLINE);
+	exit_code
+}
+
+/// Builds the server with its default headers and every route. Nothing here touches the
+/// network, so tests can serve the real route table on a loopback port.
+fn build_app(hsts: Option<&str>) -> server::Server {
+	let mut app = server::Server::new();
 
 	// Define default headers (added to all responses)
 	app.default_headers = headers! {
@@ -219,7 +236,7 @@ async fn main() {
 	}
 
 	// Read static files
-	app.at("/style.css").get(|_| style().boxed());
+	app.at("/style.css").get(|req| async move { assets::stylesheet_response(&req) }.boxed());
 	app
 		.at("/manifest.json")
 		.get(|_| resource(include_str!("../static/manifest.json"), "application/json", false).boxed());
@@ -243,21 +260,20 @@ async fn main() {
 	app.at("/Inter.var.woff2").get(|_| font().boxed());
 	app.at("/touch-icon-iphone.png").get(|_| iphone_logo().boxed());
 	app.at("/apple-touch-icon.png").get(|_| iphone_logo().boxed());
-	app.at("/opensearch.xml").get(|_| opensearch().boxed());
+	app.at("/opensearch.xml").get(|r| opensearch(r).boxed());
+	app.at("/playHLSVideo.js").get(|r| async move { assets::script_response("playHLSVideo.js", &r) }.boxed());
+	app.at("/hls.min.js").get(|r| async move { assets::script_response("hls.min.js", &r) }.boxed());
+	app.at("/highlighted.js").get(|r| async move { assets::script_response("highlighted.js", &r) }.boxed());
+	app.at("/check_update.js").get(|r| async move { assets::script_response("check_update.js", &r) }.boxed());
+	app.at("/copy.js").get(|r| async move { assets::script_response("copy.js", &r) }.boxed());
 	app
-		.at("/playHLSVideo.js")
-		.get(|_| resource(include_str!("../static/playHLSVideo.js"), "text/javascript", false).boxed());
+		.at("/collapse_thread.js")
+		.get(|r| async move { assets::script_response("collapse_thread.js", &r) }.boxed());
 	app
-		.at("/hls.min.js")
-		.get(|_| resource(include_str!("../static/hls.min.js"), "text/javascript", false).boxed());
-	app
-		.at("/highlighted.js")
-		.get(|_| resource(include_str!("../static/highlighted.js"), "text/javascript", false).boxed());
-	app
-		.at("/check_update.js")
-		.get(|_| resource(include_str!("../static/check_update.js"), "text/javascript", false).boxed());
-	app.at("/copy.js").get(|_| resource(include_str!("../static/copy.js"), "text/javascript", false).boxed());
+		.at("/reduced_motion.js")
+		.get(|r| async move { assets::script_response("reduced_motion.js", &r) }.boxed());
 
+	app.at("/healthz").get(|_| health::healthz().boxed());
 	app.at("/commits.atom").get(|_| async move { proxy_commit_info().await }.boxed());
 	app.at("/instances.json").get(|_| async move { proxy_instances().await }.boxed());
 
@@ -337,7 +353,7 @@ async fn main() {
 		.get(|r| async move { Ok(redirect(&format!("/r/{}/wiki", r.param("sub").unwrap_or_default()))) }.boxed());
 	app
 		.at("/r/:sub/w/*page")
-		.get(|r| async move { Ok(redirect(&format!("/r/{}/wiki/{}", r.param("sub").unwrap_or_default(), r.param("wiki").unwrap_or_default()))) }.boxed());
+		.get(|r| async move { Ok(redirect(&format!("/r/{}/wiki/{}", r.param("sub").unwrap_or_default(), r.param("page").unwrap_or_default()))) }.boxed());
 	app.at("/r/:sub/wiki").get(|r| subreddit::wiki(r).boxed());
 	app.at("/r/:sub/wiki/*page").get(|r| subreddit::wiki(r).boxed());
 
@@ -368,87 +384,555 @@ async fn main() {
 
 	// Handle obfuscated share links.
 	// Note that this still forces the server to follow the share link to get to the post, so maybe this wants to be updated with a warning before it follow it
-	app.at("/r/:sub/s/:id").get(|req: Request<Body>| {
-		Box::pin(async move {
-			let sub = req.param("sub").unwrap_or_default();
-			match req.param("id").as_deref() {
-				// Share link
-				Some(id) if (8..12).contains(&id.len()) => match canonical_path(format!("/r/{sub}/s/{id}"), 3).await {
-					Ok(Some(path)) => Ok(redirect(&path)),
-					Ok(None) => error(req, "Post ID is invalid. It may point to a post on a community that has been banned.").await,
-					Err(e) => error(req, &e).await,
-				},
+	app.at("/r/:sub/s/:id").get(|req| share_link(req).boxed());
 
-				// Error message for unknown pages
-				_ => error(req, "Nothing here").await,
-			}
-		})
-	});
-
-	app.at("/:id").get(|req: Request<Body>| {
-		Box::pin(async move {
-			match req.param("id").as_deref() {
-				// Sort front page
-				Some("best" | "hot" | "new" | "top" | "rising" | "controversial") => subreddit::community(req).await,
-
-				// Short link for post
-				Some(id) if (5..8).contains(&id.len()) => match canonical_path(format!("/comments/{id}"), 3).await {
-					Ok(path_opt) => match path_opt {
-						Some(path) => Ok(redirect(&path)),
-						None => error(req, "Post ID is invalid. It may point to a post on a community that has been banned.").await,
-					},
-					Err(e) => error(req, &e).await,
-				},
-
-				// Error message for unknown pages
-				_ => error(req, "Nothing here").await,
-			}
-		})
-	});
+	app.at("/:id").get(|req| short_link(req).boxed());
 
 	// Default service in case no routes match
 	app.at("/*").get(|req| error(req, "Nothing here").boxed());
 
+	app
+}
+
+/// `--healthcheck`: exits 0 and prints `ok` when the local server's `/healthz` answers 200,
+/// otherwise exits 1 with the reason on stderr (for Docker `HEALTHCHECK`, which has no curl).
+async fn healthcheck(matches: &ArgMatches) -> ExitCode {
+	let outcome = match listener_address(matches) {
+		Ok(listen) => health::probe(listen).await,
+		Err(message) => Err(message),
+	};
+	match outcome {
+		Ok(()) => {
+			println!("ok");
+			ExitCode::SUCCESS
+		}
+		Err(message) => {
+			eprintln!("unhealthy: {message}");
+			ExitCode::FAILURE
+		}
+	}
+}
+
+async fn run(matches: &ArgMatches) -> Result<(), String> {
+	let listener = listener_address(matches)?;
+
+	match rate_limit_check().await {
+		Ok(()) => {
+			info!("[✅] Rate limit check passed");
+		}
+		Err(e) => {
+			let mut message = format!("Rate limit check failed: {e}");
+			message += "\nThis may cause issues with the rate limit.";
+			message += "\nPlease report this error with the above information.";
+			message += "\nhttps://github.com/redlib-org/redlib/issues/new?assignees=sigaloid&labels=bug&title=%F0%9F%90%9B+Bug+Report%3A+Rate+limit+mismatch";
+			warn!("{}", message);
+			eprintln!("{message}");
+		}
+	}
+
+	let hsts = matches.get_one("hsts").map(|m: &String| m.as_str());
+
+	println!("Starting Redlib...");
+
+	// Force evaluation of statics. In instance_info case, we need to evaluate
+	// the timestamp so deploy date is accurate - in config case, we need to
+	// evaluate the configuration to avoid paying penalty at first request -
+	// in OAUTH case, we need to retrieve the token to avoid paying penalty
+	// at first request
+
+	info!("Evaluating instance info.");
+	LazyLock::force(&instance_info::INSTANCE_INFO);
+	assets::warm();
+	info!("Creating OAUTH client.");
+	LazyLock::force(&OAUTH_CLIENT);
+
+	let app = build_app(hsts);
+
 	println!("Running Redlib v{} on {listener}!", env!("CARGO_PKG_VERSION"));
 
-	let server = app.listen(&listener);
+	let server = app.listen(listener);
 
 	// Run this server for... forever!
-	if let Err(e) = server.await {
-		eprintln!("Server error: {e}");
+	server.await.map_err(|e| format!("Server error: {e}"))
+}
+
+/// Where to listen, from the command line (and `IPV4_ONLY`/`IPV6_ONLY`/`PORT`).
+fn listener_address(matches: &ArgMatches) -> Result<SocketAddr, String> {
+	resolve_listener(
+		matches.get_one::<String>("address").map(String::as_str),
+		matches.get_one::<String>("port").expect("port has a default value"),
+		matches.get_flag("ipv4-only"),
+		matches.get_flag("ipv6-only"),
+	)
+}
+
+/// Decides the socket address to bind. Without `address` the wildcard address of
+/// the chosen family is used (IPv6, which also accepts IPv4 on most systems, unless
+/// `-4`). An explicit `address` is never replaced, and must match the family flag.
+/// Scoped IPv6 addresses such as `[fe80::1%3]` or `fe80::1%3` are supported.
+fn resolve_listener(address: Option<&str>, port: &str, ipv4_only: bool, ipv6_only: bool) -> Result<SocketAddr, String> {
+	if ipv4_only && ipv6_only {
+		return Err("--ipv4-only (-4) and --ipv6-only (-6) cannot be used together".to_string());
+	}
+	let port: u16 = port.parse().map_err(|_| format!("Cannot parse {port} as a port (expected 0-65535)"))?;
+
+	match address {
+		Some(address) => {
+			let formatted = if address.starts_with('[') || !address.contains(':') {
+				format!("{address}:{port}")
+			} else {
+				format!("[{address}]:{port}")
+			};
+			let socket: SocketAddr = formatted
+				.parse()
+				.map_err(|_| format!("Cannot parse {address} as an IP address (examples: 0.0.0.0, [::], 127.0.0.1)"))?;
+			if ipv4_only && socket.is_ipv6() {
+				return Err(format!("--ipv4-only (-4) conflicts with the IPv6 address {address}"));
+			}
+			if ipv6_only && socket.is_ipv4() {
+				return Err(format!("--ipv6-only (-6) conflicts with the IPv4 address {address}"));
+			}
+			Ok(socket)
+		}
+		None if ipv4_only => Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)),
+		None => Ok(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)),
+	}
+}
+
+/// Reddit's short post ids are base-36. Anything else (`/Login`, `/ab.cde`) is
+/// not a post, so it must not cost an upstream request.
+fn is_short_link_id(id: &str) -> bool {
+	(5..8).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+}
+
+/// Share-link ids are mixed-case alphanumeric.
+fn is_share_link_id(id: &str) -> bool {
+	(8..12).contains(&id.len()) && id.bytes().all(|byte| byte.is_ascii_alphanumeric())
+}
+
+/// `/r/:sub/s/:id`: resolves an obfuscated share link to the post's canonical path.
+async fn share_link(req: Request<Body>) -> Result<Response<Body>, String> {
+	let sub = req.param("sub").unwrap_or_default();
+	match req.param("id").as_deref() {
+		// Share link
+		Some(id) if is_share_link_id(id) => match canonical_path(format!("/r/{sub}/s/{id}"), 3).await {
+			Ok(Some(path)) => Ok(redirect(&path)),
+			Ok(None) => error(req, "Post ID is invalid. It may point to a post on a community that has been banned.").await,
+			Err(e) => error(req, &e).await,
+		},
+
+		// Error message for unknown pages
+		_ => error(req, "Nothing here").await,
+	}
+}
+
+/// `/:id`: a front-page sort (`/top`) or a short link to a post (`/1abc23`).
+async fn short_link(req: Request<Body>) -> Result<Response<Body>, String> {
+	match req.param("id").as_deref() {
+		// Sort front page
+		Some("best" | "hot" | "new" | "top" | "rising" | "controversial") => subreddit::community(req).await,
+
+		// Short link for post
+		Some(id) if is_short_link_id(id) => match canonical_path(format!("/comments/{id}"), 3).await {
+			Ok(Some(path)) => Ok(redirect(&path)),
+			Ok(None) => error(req, "Post ID is invalid. It may point to a post on a community that has been banned.").await,
+			Err(e) => error(req, &e).await,
+		},
+
+		// Error message for unknown pages
+		_ => error(req, "Nothing here").await,
 	}
 }
 
 pub async fn proxy_commit_info() -> Result<Response<Body>, String> {
-	Ok(
-		Response::builder()
-			.status(200)
-			.header("content-type", "application/atom+xml")
-			.body(Body::from(fetch_commit_info().await))
-			.unwrap_or_default(),
-	)
+	Ok(text_response(fetch_commit_info().await, "application/atom+xml"))
 }
 
-#[cached(time = 600)]
-async fn fetch_commit_info() -> String {
-	let url = "https://github.com/redlib-org/redlib/commits/main.atom";
-
-	CLIENT.get(url).send().await.expect("Failed to request GitHub").text().await.expect("Failed to read body")
+#[cached(time = 600, result = true)]
+async fn fetch_commit_info() -> Result<String, String> {
+	fetch_text("https://github.com/redlib-org/redlib/commits/main.atom").await
 }
 
 pub async fn proxy_instances() -> Result<Response<Body>, String> {
-	Ok(
-		Response::builder()
-			.status(200)
-			.header("content-type", "application/json")
-			.body(Body::from(fetch_instances().await))
-			.unwrap_or_default(),
-	)
+	Ok(text_response(fetch_instances().await, "application/json"))
 }
 
-#[cached(time = 600)]
-async fn fetch_instances() -> String {
-	let url = "https://raw.githubusercontent.com/redlib-org/redlib-instances/refs/heads/main/instances.json";
+#[cached(time = 600, result = true)]
+async fn fetch_instances() -> Result<String, String> {
+	fetch_text("https://raw.githubusercontent.com/redlib-org/redlib-instances/refs/heads/main/instances.json").await
+}
 
-	CLIENT.get(url).send().await.expect("Failed to request GitHub").text().await.expect("Failed to read body")
+/// Fetches `url` as text, returning an error instead of panicking when the
+/// remote is unreachable or answers with anything but success. `CLIENT` does
+/// not follow redirects, so a 3xx is an error too.
+async fn fetch_text(url: &str) -> Result<String, String> {
+	fetch_text_with(&CLIENT, url).await
+}
+
+async fn fetch_text_with(client: &wreq::Client, url: &str) -> Result<String, String> {
+	let response = client.get(url).send().await.map_err(|e| format!("Failed to request {url}: {e}"))?;
+	if !response.status().is_success() {
+		return Err(format!("Failed to request {url}: HTTP {}", response.status()));
+	}
+	response.text().await.map_err(|e| format!("Failed to read {url}: {e}"))
+}
+
+/// Serves fetched text, or a 502 when the upstream fetch failed.
+fn text_response(body: Result<String, String>, content_type: &str) -> Response<Body> {
+	match body {
+		Ok(body) => Response::builder().status(200).header("content-type", content_type).body(Body::from(body)),
+		Err(e) => {
+			warn!("{e}");
+			Response::builder()
+				.status(502)
+				.header("content-type", "text/plain")
+				.body(Body::from("Upstream request failed"))
+		}
+	}
+	.unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use sealed_test::prelude::*;
+
+	fn loopback_client() -> wreq::Client {
+		wreq::Client::builder().redirect(wreq::redirect::Policy::none()).no_proxy().build().unwrap()
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn unreachable_update_source_becomes_bad_gateway() {
+		// Bind and immediately release a port so nothing is listening on it.
+		let address = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+		let fetched = fetch_text_with(&loopback_client(), &format!("http://{address}/commits.atom")).await;
+		assert!(fetched.is_err());
+		assert_eq!(text_response(fetched, "application/atom+xml").status(), 502);
+	}
+
+	fn listener_for(args: &[&str]) -> Result<SocketAddr, String> {
+		let matches = cli()
+			.try_get_matches_from(std::iter::once("redlib").chain(args.iter().copied()))
+			.map_err(|e| e.to_string())?;
+		listener_address(&matches)
+	}
+
+	#[test]
+	#[sealed_test(env = [("IPV4_ONLY", "false")])]
+	fn startup_config_and_bind_false_env_does_not_enable_ipv4_only() {
+		assert_eq!(listener_for(&[]).unwrap(), "[::]:8080".parse().unwrap());
+	}
+
+	#[test]
+	#[sealed_test(env = [("IPV4_ONLY", "true")])]
+	fn startup_config_and_bind_true_env_enables_ipv4_only() {
+		assert_eq!(listener_for(&[]).unwrap(), "0.0.0.0:8080".parse().unwrap());
+	}
+
+	#[test]
+	#[sealed_test(env = [("IPV4_ONLY", ""), ("IPV6_ONLY", "")])]
+	fn startup_config_and_bind_empty_env_value_counts_as_unset() {
+		assert_eq!(listener_for(&[]).unwrap(), "[::]:8080".parse().unwrap());
+	}
+
+	#[test]
+	#[sealed_test(env = [("IPV6_ONLY", "maybe")])]
+	fn startup_config_and_bind_invalid_env_value_is_rejected() {
+		assert!(listener_for(&[]).is_err());
+	}
+
+	#[test]
+	#[sealed_test(env = [("IPV4_ONLY", "1")])]
+	fn startup_config_and_bind_explicit_address_is_kept_with_family_flag() {
+		assert_eq!(listener_for(&["-a", "127.0.0.1"]).unwrap(), "127.0.0.1:8080".parse().unwrap());
+		assert_eq!(listener_for(&["-4", "-a", "192.168.1.5", "-p", "9000"]).unwrap(), "192.168.1.5:9000".parse().unwrap());
+	}
+
+	#[test]
+	fn startup_config_and_bind_family_flags_pick_the_wildcard_address() {
+		assert_eq!(listener_for(&[]).unwrap(), "[::]:8080".parse().unwrap());
+		assert_eq!(listener_for(&["-4"]).unwrap(), "0.0.0.0:8080".parse().unwrap());
+		assert_eq!(listener_for(&["-6"]).unwrap(), "[::]:8080".parse().unwrap());
+		assert_eq!(listener_for(&["-6", "-a", "[::1]"]).unwrap(), "[::1]:8080".parse().unwrap());
+		assert_eq!(listener_for(&["-a", "::1"]).unwrap(), "[::1]:8080".parse().unwrap());
+	}
+
+	#[test]
+	fn startup_config_and_bind_conflicting_flags_are_errors() {
+		assert!(listener_for(&["-4", "-6"]).is_err());
+		assert!(listener_for(&["-4", "-a", "::1"]).is_err());
+		assert!(listener_for(&["-6", "-a", "127.0.0.1"]).is_err());
+	}
+
+	#[test]
+	#[sealed_test(env = [("IPV4_ONLY", "on"), ("IPV6_ONLY", "on")])]
+	fn startup_config_and_bind_conflicting_env_flags_are_errors() {
+		assert!(listener_for(&[]).unwrap_err().contains("cannot be used together"));
+	}
+
+	#[test]
+	fn startup_config_and_bind_accepts_scoped_ipv6_and_rejects_unmatched_brackets() {
+		let scoped = resolve_listener(Some("[fe80::1%3]"), "8080", false, false).unwrap();
+		assert_eq!(scoped.to_string(), "[fe80::1%3]:8080");
+		assert_eq!(resolve_listener(Some("fe80::1%3"), "8080", false, true).unwrap().to_string(), "[fe80::1%3]:8080");
+		assert!(resolve_listener(Some("[fe80::1%3]"), "8080", true, false).is_err());
+		assert!(resolve_listener(Some("[::1"), "8080", false, false).is_err());
+		assert!(resolve_listener(Some("::1]"), "8080", false, false).is_err());
+	}
+
+	#[test]
+	fn startup_config_and_bind_invalid_address_or_port_is_an_error_not_a_panic() {
+		assert!(listener_for(&["-a", "not-an-address"]).unwrap_err().contains("not-an-address"));
+		assert!(listener_for(&["-p", "http"]).unwrap_err().contains("http"));
+		assert!(listener_for(&["-p", "70000"]).is_err());
+	}
+
+	fn request_with_params(path: &str, params: &[(&str, &str)]) -> Request<Body> {
+		let mut request = Request::get(path).body(Body::empty()).unwrap();
+		let mut route_params = route_recognizer::Params::new();
+		for (name, value) in params {
+			route_params.insert(name.to_string(), value.to_string());
+		}
+		request.set_params(route_params);
+		request
+	}
+
+	async fn page_text(response: Response<Body>) -> (u16, String) {
+		let status = response.status().as_u16();
+		let body = hyper::body::to_bytes(response.into_body()).await.unwrap();
+		(status, String::from_utf8_lossy(&body).into_owned())
+	}
+
+	// Each of these would otherwise reach `canonical_path`, which asks Reddit; the handler must answer locally.
+	#[tokio::test]
+	async fn dos_and_shortlink_limits_non_base36_short_links_make_no_upstream_call() {
+		for id in ["Login", "wp-adm", "ab.cde", "abc-de", "ab_cde", "%2e%2e%2e"] {
+			let (status, body) = page_text(short_link(request_with_params(&format!("/{id}"), &[("id", id)])).await.unwrap()).await;
+			assert_eq!(status, 404, "{id}");
+			assert!(body.contains("Nothing here"), "{id}: {body}");
+		}
+	}
+
+	#[tokio::test]
+	async fn dos_and_shortlink_limits_malformed_share_ids_make_no_upstream_call() {
+		for id in ["abcdefg-hi", "abc.defghi", "abc%20defgh", "abcdefg_hij"] {
+			let (status, body) = page_text(share_link(request_with_params(&format!("/r/rust/s/{id}"), &[("sub", "rust"), ("id", id)])).await.unwrap()).await;
+			assert_eq!(status, 404, "{id}");
+			assert!(body.contains("Nothing here"), "{id}: {body}");
+		}
+	}
+
+	#[test]
+	fn dos_and_shortlink_limits_id_alphabets() {
+		// Real short ids are lowercase base-36; lowercase words such as `login` are valid ids and are deliberately not special-cased.
+		assert!(is_short_link_id("1abc23") && is_short_link_id("zzzzz") && is_short_link_id("login"));
+		assert!(!is_short_link_id("1ABC23") && !is_short_link_id("abcd") && !is_short_link_id("abcdefgh") && !is_short_link_id("ab-cde"));
+		// Real share ids are mixed-case.
+		assert!(is_share_link_id("Sx3Yb7LbhH") && is_share_link_id("abcdefgh"));
+		assert!(!is_share_link_id("abcdefg") && !is_share_link_id("abcdefghijkl") && !is_share_link_id("abcdefg-hi"));
+	}
+
+	/// Serves the real route table on a free loopback port until the returned handle is aborted.
+	fn serve_app() -> (SocketAddr, tokio::task::JoinHandle<Result<(), hyper::Error>>) {
+		let address = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+		(address, tokio::spawn(build_app(None).listen(address)))
+	}
+
+	async fn fetch(address: SocketAddr, path: &str) -> Response<Body> {
+		let uri: hyper::Uri = format!("http://{address}{path}").parse().unwrap();
+		hyper::Client::new().get(uri).await.unwrap()
+	}
+
+	const SCRIPTS: [&str; 7] = [
+		"hls.min.js",
+		"playHLSVideo.js",
+		"highlighted.js",
+		"check_update.js",
+		"copy.js",
+		"collapse_thread.js",
+		"reduced_motion.js",
+	];
+
+	fn cache_control(response: &Response<Body>) -> String {
+		response.headers()["cache-control"].to_str().unwrap().to_string()
+	}
+
+	#[tokio::test]
+	async fn static_js_caching_only_versioned_urls_are_cached_for_good() {
+		let (address, server) = serve_app();
+		for script in SCRIPTS {
+			let current = format!("/{script}?v={}", assets::version(script));
+			let response = fetch(address, &current).await;
+			assert_eq!(response.status(), 200, "{current}");
+			assert_eq!(cache_control(&response), "public, max-age=31536000, immutable", "{current}");
+
+			for unversioned in [format!("/{script}"), format!("/{script}?v=0000"), format!("/{script}?x=1")] {
+				let cache_control = cache_control(&fetch(address, &unversioned).await);
+				assert!(
+					!cache_control.contains("immutable") && cache_control.contains("max-age=300"),
+					"{unversioned}: {cache_control}"
+				);
+			}
+		}
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn static_js_caching_scripts_are_served_compressed_from_the_precompressed_copy() {
+		let (address, server) = serve_app();
+		let request = |path: &'static str| {
+			let request = Request::get(format!("http://{address}{path}")).header("accept-encoding", "br").body(Body::empty()).unwrap();
+			async move { hyper::Client::new().request(request).await.unwrap() }
+		};
+
+		let first = request("/hls.min.js").await;
+		assert_eq!(first.headers()["content-encoding"], "br");
+		assert_eq!(first.headers()["vary"], "Accept-Encoding");
+		let first = hyper::body::to_bytes(first.into_body()).await.unwrap();
+		let second = hyper::body::to_bytes(request("/hls.min.js").await.into_body()).await.unwrap();
+		assert_eq!(first, second);
+
+		let mut decoded = Vec::new();
+		std::io::copy(&mut brotli::Decompressor::new(std::io::Cursor::new(first.to_vec()), 4096), &mut decoded).unwrap();
+		assert!(decoded == include_bytes!("../static/hls.min.js"), "the served script must decode to the file");
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn healthz_and_shutdown_route_answers_200_then_503() {
+		use redlib::client::OAUTH_TOKEN_EXPIRES_AT;
+		use std::sync::atomic::Ordering;
+
+		let (address, server) = serve_app();
+		let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+
+		OAUTH_TOKEN_EXPIRES_AT.store(now + 3600, Ordering::SeqCst);
+		let (status, body) = page_text(fetch(address, "/healthz").await).await;
+		assert_eq!(status, 200, "{body}");
+		let report: serde_json::Value = serde_json::from_str(&body).unwrap();
+		assert_eq!((report["status"].as_str(), report["oauth_ready"].as_bool()), (Some("ok"), Some(true)));
+
+		OAUTH_TOKEN_EXPIRES_AT.store(1, Ordering::SeqCst);
+		let (status, body) = page_text(fetch(address, "/healthz").await).await;
+		assert_eq!(status, 503, "{body}");
+		assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["status"], "degraded");
+		server.abort();
+	}
+
+	async fn descriptor_for(address: SocketAddr, headers: &[(&str, &str)]) -> (u16, String) {
+		let mut request = Request::get(format!("http://{address}/opensearch.xml"));
+		for (name, value) in headers {
+			request = request.header(*name, *value);
+		}
+		page_text(hyper::Client::new().request(request.body(Body::empty()).unwrap()).await.unwrap()).await
+	}
+
+	#[tokio::test]
+	async fn opensearch_and_og_descriptor_uses_the_request_host() {
+		let (address, server) = serve_app();
+
+		let (status, body) = descriptor_for(address, &[("host", "redlib.example")]).await;
+		assert_eq!(status, 200, "{body}");
+		assert!(body.contains("template=\"http://redlib.example/search\""), "{body}");
+		assert!(body.contains(">http://redlib.example/favicon.ico<"), "{body}");
+		assert!(body.contains("<moz:SearchForm>http://redlib.example/search<"), "{body}");
+		assert!(!body.contains("localhost:8080"), "{body}");
+
+		let (_, body) = descriptor_for(address, &[("host", "redlib.example"), ("x-forwarded-proto", "https")]).await;
+		assert!(body.contains("template=\"https://redlib.example/search\""), "{body}");
+		server.abort();
+	}
+
+	#[tokio::test]
+	async fn opensearch_and_og_descriptor_rejects_an_unusable_host() {
+		let (address, server) = serve_app();
+		for host in ["evil\"><x", "user@redlib.example"] {
+			let (status, body) = descriptor_for(address, &[("host", host)]).await;
+			assert_eq!(status, 400, "{host}: {body}");
+			assert!(!body.contains("<x"), "{host}: {body}");
+		}
+		server.abort();
+	}
+
+	#[sealed_test(env = [("REDLIB_FULL_URL", "https://libred.example/")])]
+	fn opensearch_and_og_descriptor_prefers_the_configured_full_url() {
+		let runtime = tokio::runtime::Runtime::new().unwrap();
+		let request = Request::get("/opensearch.xml").header("host", "redlib.example").body(Body::empty()).unwrap();
+		let (status, body) = runtime.block_on(async { page_text(opensearch(request).await.unwrap()).await });
+
+		assert_eq!(status, 200, "{body}");
+		assert!(body.contains("template=\"https://libred.example/search\""), "{body}");
+		assert!(!body.contains("redlib.example"), "{body}");
+	}
+
+	fn header_values(response: &Response<Body>, name: &str) -> String {
+		response.headers().get_all(name).iter().map(|value| value.to_str().unwrap()).collect::<Vec<_>>().join(", ")
+	}
+
+	#[tokio::test]
+	async fn opensearch_and_og_descriptor_built_from_request_headers_is_not_shared_cacheable() {
+		let request = Request::get("/opensearch.xml").header("host", "redlib.example").body(Body::empty()).unwrap();
+		let response = opensearch(request).await.unwrap();
+
+		let cache_control = header_values(&response, "cache-control");
+		assert!(
+			cache_control.starts_with("private,") && !cache_control.contains("s-maxage") && !cache_control.contains("public"),
+			"{cache_control}"
+		);
+		let vary = header_values(&response, "vary").to_ascii_lowercase();
+		assert!(vary.contains("host") && vary.contains("x-forwarded-proto"), "{vary}");
+	}
+
+	#[sealed_test(env = [("REDLIB_FULL_URL", "https://libred.example")])]
+	fn opensearch_and_og_descriptor_from_the_configured_url_is_publicly_cacheable() {
+		let request = Request::get("/opensearch.xml").header("host", "redlib.example").body(Body::empty()).unwrap();
+		let response = tokio::runtime::Runtime::new().unwrap().block_on(opensearch(request)).unwrap();
+
+		assert_eq!(header_values(&response, "cache-control"), "public, max-age=1209600, s-maxage=86400");
+	}
+
+	#[tokio::test]
+	async fn wiki_info_and_config_wiki_shortcut_keeps_the_page_path() {
+		let (address, server) = serve_app();
+		for (shortcut, wiki) in [("/r/rust/w/faq/index", "/r/rust/wiki/faq/index"), ("/r/rust/w", "/r/rust/wiki")] {
+			let response = fetch(address, shortcut).await;
+			assert_eq!(response.status(), 302, "{shortcut}");
+			assert_eq!(response.headers()["location"], wiki, "{shortcut}");
+		}
+		server.abort();
+	}
+
+	#[test]
+	fn fetched_text_is_served_with_its_content_type() {
+		let response = text_response(Ok("<feed/>".to_string()), "application/atom+xml");
+		assert_eq!(response.status(), 200);
+		assert_eq!(response.headers()["content-type"], "application/atom+xml");
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn redirected_update_source_is_an_error() {
+		use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		let upstream = tokio::spawn(async move {
+			let (mut socket, _) = listener.accept().await.unwrap();
+			let mut request = Vec::new();
+			while !request.ends_with(b"\r\n\r\n") {
+				let mut byte = [0; 1];
+				socket.read_exact(&mut byte).await.unwrap();
+				request.push(byte[0]);
+			}
+			// GitHub answers a renamed repository with a redirect and an empty body.
+			socket
+				.write_all(b"HTTP/1.1 301 Moved Permanently\r\nLocation: /elsewhere\r\nContent-Length: 0\r\n\r\n")
+				.await
+				.unwrap();
+		});
+
+		let fetched = fetch_text_with(&loopback_client(), &format!("http://{address}/commits.atom")).await;
+		upstream.abort();
+		let error = fetched.expect_err("an empty redirect body must not be served and cached as the feed");
+		assert!(error.contains("HTTP 301"), "{error}");
+	}
 }

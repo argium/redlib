@@ -1,9 +1,11 @@
-# docker-compose -f docker-compose.dev.yml up -d
-version: "3.8"
-
+# docker compose -f compose.dev.yaml up -d --build
 services:
   redlib:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.alpine
+      args:
+        GIT_HASH: ${GIT_HASH:-}
     restart: always
     container_name: "redlib"
     ports:
@@ -18,9 +20,11 @@ services:
     networks:
       - redlib
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "--tries=1", "http://localhost:8080/settings"]
-      interval: 5m
-      timeout: 3s
+      test: ["CMD", "redlib", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      start_period: 30s
+      retries: 3
 
 networks:
   redlib:

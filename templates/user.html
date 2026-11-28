@@ -3,7 +3,7 @@
 user.name.replace("u/", "") }} (u/{{ user.name }}) - Redlib{% endblock %} {%
 block subscriptions %} {% call utils::sub_list("") %} {% endblock %} {% block
 body %}
-<main>
+<main id="main-content">
     {% if !is_filtered %}
     <div id="column_one">
         <form id="sort">
@@ -11,16 +11,17 @@ body %}
                 {% call utils::sort(["/user/", user.name.as_str()].concat(),
                 ["overview", "comments", "submitted"], listing) %}
             </div>
-            <select id="sort_select" name="sort">
+            <select id="sort_select" name="sort" aria-label="Sort by">
                 {% call utils::options(sort.0, ["hot", "new", "top",
                 "controversial"], "") %}</select
             >{% if sort.0 == "top" || sort.0 == "controversial" %}<select
                 id="timeframe"
                 name="t"
+                aria-label="Timeframe"
             >
                 {% call utils::options(sort.1, ["hour", "day", "week", "month",
                 "year", "all"], "all") %}</select
-            >{% endif %}<button id="sort_submit" class="submit">
+            >{% endif %}<button id="sort_submit" class="submit" aria-label="Apply sort">
                 <svg
                     width="15"
                     viewBox="0 0 110 100"
@@ -41,7 +42,7 @@ body %}
             in settings to view.
         </center>
         {% endif %} {% if no_posts %}
-        <center>No posts were found.</center>
+        {% call utils::empty_feed(url, "", "") %}
         {% endif %} {% if all_posts_filtered %}
         <center>(All content on this page has been filtered)</center>
         {% else %}
@@ -81,10 +82,7 @@ body %}
                     <p class="comment_body">{{ post.body|safe }}</p>
                 </details>
             </div>
-            {% endif %} {% endfor %} {% if prefs.use_hls == "on" %}
-            <script src="/hls.min.js"></script>
-            <script src="/playHLSVideo.js"></script>
-            {% endif %}
+            {% endif %} {% endfor %} {% call utils::hls_scripts(posts) %}
         </div>
         {% endif %}
 
@@ -130,14 +128,14 @@ body %}
                 <div id="user_subscription">
                     {% if prefs.subscriptions.contains(name) %}
                     <form
-                        action="/r/{{ name }}/unsubscribe?redirect={{ redirect_url }}"
+                        action="/r/{{ name }}/unsubscribe?redirect={{ redirect_url|urlencode_strict }}"
                         method="POST"
                     >
                         <button class="unsubscribe">Unfollow</button>
                     </form>
                     {% else %}
                     <form
-                        action="/r/{{ name }}/subscribe?redirect={{ redirect_url }}"
+                        action="/r/{{ name }}/subscribe?redirect={{ redirect_url|urlencode_strict }}"
                         method="POST"
                     >
                         <button class="subscribe">Follow</button>
@@ -147,14 +145,14 @@ body %}
                 <div id="user_filter">
                     {% if prefs.filters.contains(name) %}
                     <form
-                        action="/r/{{ name }}/unfilter?redirect={{ redirect_url }}"
+                        action="/r/{{ name }}/unfilter?redirect={{ redirect_url|urlencode_strict }}"
                         method="POST"
                     >
                         <button class="unfilter">Unfilter</button>
                     </form>
                     {% else %}
                     <form
-                        action="/r/{{ name }}/filter?redirect={{ redirect_url }}"
+                        action="/r/{{ name }}/filter?redirect={{ redirect_url|urlencode_strict }}"
                         method="POST"
                     >
                         <button class="filter">Filter</button>
@@ -163,12 +161,11 @@ body %}
                 </div>
                 {% if crate::utils::enable_rss() %}
                 <div id="user_rss">
-                    <a
-                        href="/u/{{ user.name }}.rss"
-                        title="RSS feed for u/{{ user.name }}"
-                    >
-                        <button class="subscribe">RSS feed</button>
-                    </a>
+                    <form action="/u/{{ user.name }}.rss">
+                        <button class="subscribe" title="RSS feed for u/{{ user.name }}">
+                            RSS feed
+                        </button>
+                    </form>
                 </div>
                 {% endif %}
             </div>

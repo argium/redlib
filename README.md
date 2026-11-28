@@ -252,10 +252,23 @@ systemctl --user status redlib.service
 
 If you're on Linux, you can grab a binary from [the newest release](https://github.com/redlib-org/redlib/releases/latest) from GitHub.
 
-Download the binary using [Wget](https://www.gnu.org/software/wget/):
+Each release has one archive per CPU architecture, with a checksum file beside it:
+
+| Architecture | `TARGET` |
+| --- | --- |
+| x86-64 | `x86_64-unknown-linux-musl` |
+| ARM64 | `aarch64-unknown-linux-musl` |
+| 32-bit ARM (ARMv7) | `armv7-unknown-linux-musleabihf` |
+
+Download the archive and its checksum for your architecture using [Wget](https://www.gnu.org/software/wget/), verify the checksum, and unpack the binary only if it matches (set `VERSION` to the release tag you picked):
 
 ```bash
-wget https://github.com/redlib-org/redlib/releases/download/v0.40.0/redlib
+VERSION=v0.40.0
+TARGET=x86_64-unknown-linux-musl
+wget "https://github.com/redlib-org/redlib/releases/download/${VERSION}/redlib-${TARGET}.tar.gz" \
+     "https://github.com/redlib-org/redlib/releases/download/${VERSION}/redlib-${TARGET}.tar.gz.sha256" \
+  && sha256sum -c "redlib-${TARGET}.tar.gz.sha256" \
+  && tar xzf "redlib-${TARGET}.tar.gz"
 ```
 
 Make the binary executable and change its ownership to `root`:
@@ -380,6 +393,8 @@ REDLIB_DEFAULT_WIDE = "on"
 REDLIB_DEFAULT_USE_HLS = "on"
 ```
 
+Redlib stops with a non-zero exit status if `redlib.toml` exists but cannot be read or parsed, rather than starting with the wrong settings.
+
 > [!NOTE]
 > If you're deploying Redlib using the **Docker CLI or Docker Compose**, environment variables can be defined in a [`.env` file](https://docs.docker.com/compose/environment-variables/set-environment-variables/), allowing you to centralize and manage configuration in one place.
 >
@@ -397,12 +412,13 @@ REDLIB_DEFAULT_USE_HLS = "on"
 
 Redlib supports the following command line flags:
 
-- `-4`, `--ipv4-only`: Listen on IPv4 only.
-- `-6`, `--ipv6-only`: Listen on IPv6 only.
+- `-4`, `--ipv4-only` (or `IPV4_ONLY=true`): Listen on IPv4 only. With `--address`, the address must be IPv4.
+- `-6`, `--ipv6-only` (or `IPV6_ONLY=true`): Listen on IPv6 only. With `--address`, the address must be IPv6. The two flags cannot be combined, and `IPV4_ONLY`/`IPV6_ONLY` must be a boolean such as `true` or `false`.
 - `-r`, `--redirect-https`: Redirect all HTTP requests to HTTPS (no longer functional).
-- `-a`, `--address <ADDRESS>`: Sets address to listen on. Default is `[::]`.
+- `-a`, `--address <ADDRESS>`: Sets address to listen on. Default is `[::]` (`0.0.0.0` with `-4`).
 - `-p`, `--port <PORT>`: Port to listen on. Default is `8080`.
 - `-H`, `--hsts <EXPIRE_TIME>`: HSTS header to tell browsers that this site should only be accessed over HTTPS. Default is `604800`.
+- `--healthcheck`: Ask the Redlib already running on `--address`/`--port` whether it is healthy, then exit. It prints `ok` and exits `0` when `GET /healthz` answers `200`, which needs a valid Reddit OAuth token. Otherwise it prints the reason to stderr and exits `1`. The container images use it as their `HEALTHCHECK`, so they need no `curl` or `wget`.
 
 ## Instance settings
 
@@ -416,7 +432,9 @@ Assign a default value for each instance-specific setting by passing environment
 | `PUSHSHIFT_FRONTEND`      | String          | `undelete.pullpush.io` | Allows the server to set the Pushshift frontend to be used with "removed" links.                          |
 | `PORT`                    | Integer 0-65535 | `8080`                 | The **internal** port Redlib listens on.                                                                  |
 | `ENABLE_RSS`              | `["on", "off"]` | `off`                  | Enables RSS feed generation.                                                                              |
-| `FULL_URL`                | String          | (empty)                | Allows for proper URLs (for now, only needed by RSS)                                                      |
+| `FULL_URL`                | String          | (empty)                | The instance's public URL, e.g. `https://redlib.example`. Used by RSS, `/opensearch.xml` and link-preview tags. |
+
+`/opensearch.xml` and the `og:` link-preview tags take the instance's URL from `FULL_URL` when it is set. Otherwise they use the request's `Host` header, with the scheme from `X-Forwarded-Proto` (`https`, else `http`). `X-Forwarded-Host` and `Forwarded` are ignored on purpose, so a reverse proxy that rewrites `Host` (to `localhost:8080`, say) must set `REDLIB_FULL_URL`. Without `FULL_URL`, `/opensearch.xml` is cached by the visitor's browser only, not by shared caches.
 
 ## Default user settings
 
@@ -482,4 +500,12 @@ winget install -i LLVM.LLVM
 
 # For tests.
 winget install GoLang.Go
+```
+
+### Script tests
+
+The browser scripts in `static/` are tested with Node's built-in test runner, so there are no packages to install (run on Node 26):
+
+```sh
+node --test tests/js/
 ```

@@ -7,6 +7,7 @@ use crate::{
 };
 use askama::Template;
 use hyper::{Body, Request, Response};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -110,15 +111,7 @@ pub async fn find(req: Request<Body>) -> Result<Response<Body>, String> {
 			posts: Vec::new(),
 			subreddits,
 			sub,
-			params: SearchParams {
-				q: query.replace('"', "&quot;"),
-				sort,
-				t: param(&path, "t").unwrap_or_default(),
-				before: param(&path, "after").unwrap_or_default(),
-				after: String::new(),
-				restrict_sr: param(&path, "restrict_sr").unwrap_or_default(),
-				typed,
-			},
+			params: search_params(&path, query, sort, typed, String::new()),
 			prefs: Preferences::new(&req),
 			url,
 			is_filtered: true,
@@ -136,15 +129,7 @@ pub async fn find(req: Request<Body>) -> Result<Response<Body>, String> {
 					posts,
 					subreddits,
 					sub,
-					params: SearchParams {
-						q: query.replace('"', "&quot;"),
-						sort,
-						t: param(&path, "t").unwrap_or_default(),
-						before: param(&path, "after").unwrap_or_default(),
-						after,
-						restrict_sr: param(&path, "restrict_sr").unwrap_or_default(),
-						typed,
-					},
+					params: search_params(&path, query, sort, typed, after),
 					prefs: Preferences::new(&req),
 					url,
 					is_filtered: false,
@@ -165,16 +150,39 @@ pub async fn find(req: Request<Body>) -> Result<Response<Body>, String> {
 	}
 }
 
-async fn search_subreddits(q: &str, typed: &str) -> Vec<Subreddit> {
-	let limit = if typed == "sr_user" { "50" } else { "3" };
-	let subreddit_search_path = format!("/subreddits/search.json?q={}&limit={limit}", q.replace(' ', "+"));
+/// The search as the result page shows it. `q` stays raw text: the template HTML-escapes it where
+/// displayed and percent-encodes it inside links.
+fn search_params(path: &str, query: String, sort: String, typed: String, after: String) -> SearchParams {
+	SearchParams {
+		q: query,
+		sort,
+		t: param(path, "t").unwrap_or_default(),
+		before: param(path, "after").unwrap_or_default(),
+		after,
+		restrict_sr: param(path, "restrict_sr").unwrap_or_default(),
+		typed,
+	}
+}
 
+fn subreddit_search_path(q: &str, typed: &str) -> String {
+	let limit = if typed == "sr_user" { "50" } else { "3" };
+	format!("/subreddits/search.json?q={}&limit={limit}", utf8_percent_encode(q, NON_ALPHANUMERIC))
+}
+
+async fn search_subreddits(q: &str, typed: &str) -> Vec<Subreddit> {
 	// Send a request to the url
-	json(subreddit_search_path, false).await.unwrap_or_default()["data"]["children"]
+	let listing = json(subreddit_search_path(q, typed), false).await.unwrap_or_default();
+	subreddit_results(&listing, utils::sfw_only())
+}
+
+/// Reads the communities of a subreddit search listing. An SFW-only instance leaves out the NSFW ones.
+fn subreddit_results(listing: &serde_json::Value, sfw_only: bool) -> Vec<Subreddit> {
+	listing["data"]["children"]
 		.as_array()
 		.map(ToOwned::to_owned)
 		.unwrap_or_default()
 		.iter()
+		.filter(|subreddit| !(sfw_only && subreddit["data"]["over18"].as_bool() != Some(false)))
 		.map(|subreddit| {
 			// For each subreddit from subreddit list
 			// Fetch subreddit icon either from the community_icon or icon_img value
@@ -189,4 +197,212 @@ async fn search_subreddits(q: &str, typed: &str) -> Vec<Subreddit> {
 			}
 		})
 		.collect::<Vec<Subreddit>>()
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{search_params, subreddit_results, subreddit_search_path, SearchParams, SearchTemplate, Subreddit};
+	use crate::test_support::post_fixture;
+	use crate::utils::Preferences;
+	use askama::Template;
+
+	async fn rendered_results(use_hls: &str, hls_post: bool) -> String {
+		SearchTemplate {
+			posts: vec![post_fixture(hls_post).await],
+			subreddits: Vec::new(),
+			sub: String::new(),
+			params: SearchParams {
+				q: "cats".to_string(),
+				sort: "relevance".to_string(),
+				t: String::new(),
+				before: String::new(),
+				after: String::new(),
+				restrict_sr: String::new(),
+				typed: "all".to_string(),
+			},
+			prefs: Preferences {
+				use_hls: use_hls.to_string(),
+				..Preferences::default()
+			},
+			url: "/search?q=cats".to_string(),
+			is_filtered: false,
+			all_posts_filtered: false,
+			all_posts_hidden_nsfw: false,
+			no_posts: false,
+		}
+		.render()
+		.unwrap()
+	}
+
+	#[test]
+	fn html_markup_and_highlighted_search_pages_have_valid_markup() {
+		crate::html_checks::assert_valid_markup("post results", &render_search("rust", ""));
+		crate::html_checks::assert_valid_markup("subreddit results", &render_search("rust", "sr_user"));
+	}
+
+	#[test]
+	fn a11y_markup_search_pages_have_a_skip_link_main_and_one_h1() {
+		crate::html_checks::assert_landmarks("post results", &render_search("rust", ""));
+		crate::html_checks::assert_landmarks("subreddit results", &render_search("rust", "sr_user"));
+	}
+
+	#[tokio::test]
+	async fn template_a11y_and_html_search_pages_are_accessible() {
+		crate::html_checks::assert_accessible("post results", &render_search("rust", ""));
+		crate::html_checks::assert_accessible("subreddit results", &render_search("rust", "sr_user"));
+		crate::html_checks::assert_accessible("results with an HLS post", &rendered_results("on", true).await);
+	}
+
+	#[tokio::test]
+	async fn static_js_caching_search_loads_hls_only_for_hls_posts() {
+		let with_hls = rendered_results("on", true).await;
+		let hls = format!("/hls.min.js?v={}\" defer", crate::assets::version("hls.min.js"));
+		let player = format!("/playHLSVideo.js?v={}\" defer", crate::assets::version("playHLSVideo.js"));
+		assert!(with_hls.contains(&hls) && with_hls.contains(&player), "content-versioned, deferred HLS scripts expected");
+		assert!(with_hls.find(&hls) < with_hls.find(&player), "hls.min.js must come first so playHLSVideo.js can use Hls");
+		assert!(!rendered_results("on", false).await.contains("hls.min.js"), "no HLS post, no hls.min.js");
+		assert!(!rendered_results("off", true).await.contains("hls.min.js"), "use_hls off, no hls.min.js");
+	}
+
+	const AWKWARD_QUERY: &str = r#"C++ & AT&T #1 100% "x""#;
+	const AWKWARD_QUERY_ENCODED: &str = "C%2B%2B%20%26%20AT%26T%20%231%20100%25%20%22x%22";
+
+	fn render_search(q: &str, typed: &str) -> String {
+		search_template(q, typed).render().unwrap()
+	}
+
+	fn search_template(q: &str, typed: &str) -> SearchTemplate {
+		SearchTemplate {
+			posts: Vec::new(),
+			subreddits: vec![Subreddit {
+				name: "cpp".to_string(),
+				url: "/r/cpp/".to_string(),
+				icon: String::new(),
+				description: String::new(),
+				subscribers: ("1".to_string(), "1".to_string()),
+			}],
+			sub: String::new(),
+			params: SearchParams {
+				q: q.to_string(),
+				sort: "relevance".to_string(),
+				t: "all".to_string(),
+				before: "t3_before".to_string(),
+				after: "t3_after".to_string(),
+				restrict_sr: "on".to_string(),
+				typed: typed.to_string(),
+			},
+			prefs: Preferences::default(),
+			url: "/search".to_string(),
+			is_filtered: false,
+			all_posts_filtered: false,
+			all_posts_hidden_nsfw: false,
+			no_posts: true,
+		}
+	}
+
+	#[test]
+	fn search_encoding_and_comments_subreddit_lookup_encodes_the_query() {
+		assert_eq!(
+			subreddit_search_path(AWKWARD_QUERY, ""),
+			format!("/subreddits/search.json?q={AWKWARD_QUERY_ENCODED}&limit=3")
+		);
+		assert_eq!(subreddit_search_path("rust", "sr_user"), "/subreddits/search.json?q=rust&limit=50");
+	}
+
+	#[test]
+	fn search_encoding_and_comments_pagination_cursors_are_encoded() {
+		let html = SearchTemplate {
+			params: SearchParams {
+				q: "rust".to_string(),
+				sort: "relevance".to_string(),
+				t: "all".to_string(),
+				before: "t3_a&q=evil".to_string(),
+				after: "t3_b#x".to_string(),
+				restrict_sr: "on".to_string(),
+				typed: "all".to_string(),
+			},
+			..search_template("rust", "all")
+		}
+		.render()
+		.unwrap();
+		assert!(html.contains("&before=t3_a%26q%3Devil\""), "PREV cursor must stay one parameter");
+		assert!(html.contains("&after=t3_b%23x\""), "NEXT cursor must not start a fragment");
+	}
+
+	#[test]
+	fn search_encoding_and_comments_params_keep_the_query_as_raw_text() {
+		let path = "/search.json?q=x&t=week&restrict_sr=on&after=t3_abc&raw_json=1";
+		let params = search_params(path, r#"say "hi""#.to_string(), "top".to_string(), "all".to_string(), "t3_next".to_string());
+		assert_eq!(params.q, r#"say "hi""#);
+		assert_eq!((params.t.as_str(), params.restrict_sr.as_str()), ("week", "on"));
+		assert_eq!((params.before.as_str(), params.after.as_str()), ("t3_abc", "t3_next"));
+	}
+
+	#[test]
+	fn search_encoding_and_comments_links_carry_the_encoded_query() {
+		// "all" shows the "more subreddit results" link and the PREV/NEXT footer; "sr_user" shows the "back" link.
+		for (typed, links) in [("all", 3), ("sr_user", 1)] {
+			let html = render_search(AWKWARD_QUERY, typed);
+			assert_eq!(html.matches("?q=").count(), links, "{typed}: link count");
+			assert_eq!(
+				html.matches(&format!("?q={AWKWARD_QUERY_ENCODED}&")).count(),
+				links,
+				"{typed}: every link carries the encoded query"
+			);
+		}
+	}
+
+	#[test]
+	fn search_encoding_and_comments_query_is_html_escaped_once_where_shown() {
+		let html = render_search(AWKWARD_QUERY, "all");
+		assert!(html.contains(r#"value="C++ &#38; AT&#38;T #1 100% &#34;x&#34;""#), "search box");
+		assert!(html.contains("search results - C++ &#38; AT&#38;T #1 100% &#34;x&#34;</title>"), "title");
+		assert!(!html.contains("&quot;") && !html.contains("&amp;quot;"), "no hand-made entities");
+	}
+
+	fn listing() -> serde_json::Value {
+		serde_json::json!({ "data": { "children": [
+			{ "data": { "display_name": "family", "url": "/r/family/", "over18": false } },
+			{ "data": { "display_name": "unknown", "url": "/r/unknown/" } },
+			{ "data": { "display_name": "adult", "url": "/r/adult/", "over18": true } },
+		] } })
+	}
+
+	#[test]
+	fn sfw_only_search_results_leave_out_nsfw_communities() {
+		let names: Vec<_> = subreddit_results(&listing(), true).into_iter().map(|s| s.name).collect();
+		assert_eq!(names, ["family"]);
+	}
+
+	#[test]
+	fn search_results_keep_nsfw_communities_when_the_instance_allows_them() {
+		let names: Vec<_> = subreddit_results(&listing(), false).into_iter().map(|s| s.name).collect();
+		assert_eq!(names, ["family", "unknown", "adult"]);
+	}
+
+	#[test]
+	fn ux_templates_and_settings_feedback_empty_search_offers_a_wider_search() {
+		let restricted = SearchTemplate {
+			sub: "rust".to_string(),
+			url: "/r/rust/search?q=ferris&restrict_sr=on".to_string(),
+			..search_template("ferris & co", "")
+		};
+		assert_eq!(
+			crate::test_support::recovery_links(&restricted.render().unwrap()),
+			["/r/rust/search?q=ferris&restrict_sr=on", "/search?q=ferris%20%26%20co", "/"]
+		);
+
+		let everywhere = SearchTemplate {
+			params: SearchParams {
+				restrict_sr: String::new(),
+				..search_template("ferris", "").params
+			},
+			..search_template("ferris", "")
+		};
+		assert_eq!(
+			crate::test_support::recovery_links(&everywhere.render().unwrap()),
+			["/search", "/"],
+			"already searching everywhere"
+		);
+	}
 }

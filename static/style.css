@@ -35,13 +35,15 @@
     src: url("/Inter.var.woff2") format("woff2-variations");
     font-style: normal;
     font-weight: 100 900;
+    /* Show the system font at once and swap Inter in when the 325 KB file arrives, instead of hiding text */
+    font-display: swap;
 }
 
 /* Automatic theme selection */
 :root,
 .dark {
     /* Default & fallback theme (dark) */
-    --accent: #d54455;
+    --accent: #e06c7a;
     --green: #5cff85;
     --text: white;
     --foreground: #222;
@@ -49,8 +51,9 @@
     --outside: #1f1f1f;
     --post: #161616;
     --panel-border: 1px solid #333;
-    --highlighted: #333;
+    --highlighted: #292929;
     --visited: #aaa;
+    --muted: #9f9f9f;
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
     --popup: #b80a27;
     --spoiler: #ddd;
@@ -62,7 +65,7 @@
 /* Browser-defined light theme */
 @media (prefers-color-scheme: light) {
     :root {
-        --accent: #bb2b3b;
+        --accent: #b72a3a;
         --green: #00a229;
         --text: black;
         --foreground: #f5f5f5;
@@ -72,6 +75,7 @@
         --panel-border: 1px solid #ccc;
         --highlighted: white;
         --visited: #555;
+        --muted: #585858;
         --shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
         --spoiler: #0f0f0f;
 
@@ -82,21 +86,6 @@
 
 /* Other themes are located in the "themes" folder */
 
-/* Tokyo Night theme setting */
-.tokyoNight {
-    --accent: #565f89;
-    --green: #73daca;
-    --text: #a9b1d6;
-    --foreground: #24283b;
-    --background: #1a1b26;
-    --outside: #24283b;
-    --post: #1a1b26;
-    --panel-border: 1px solid #a9b1d6;
-    --highlighted: #414868;
-    --visited: #414868;
-    --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
-}
-
 /* General */
 
 ::selection {
@@ -106,6 +95,30 @@
 
 :focus-visible {
     outline: 2px solid var(--accent);
+}
+
+/* Hidden from sight, still read by screen readers; a skip link shows itself while it has focus. */
+.visually-hidden,
+.skip-link:not(:focus) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+}
+
+.skip-link {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    z-index: 3;
+    padding: 10px 15px;
+    border-radius: 5px;
+    background: var(--highlighted);
+    box-shadow: var(--shadow);
 }
 
 html,
@@ -136,7 +149,7 @@ input {
     accent-color: var(--accent);
     margin: 0;
     color: var(--text);
-    font-family: "Inter", sans-serif;
+    font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     word-wrap: anywhere;
 }
 
@@ -146,24 +159,20 @@ html.fixed_navbar {
 
 @media screen and (max-width: 800px) {
     html.fixed_navbar {
-        scroll-padding-top: 100px;
+        scroll-padding-top: 120px;
     }
 }
 
 body {
     background: var(--background);
     padding-bottom: var(--footer-height);
-    font-size: 15px;
+    font-size: 0.9375rem;
     position: relative;
 }
 
-body.card {
-    min-height: calc(100vh - 30px);
-}
-
+body.card,
 body.fixed_navbar {
-    min-height: calc(100vh - 90px);
-    padding-top: 60px;
+    min-height: calc(100vh - 30px);
 }
 
 nav {
@@ -175,7 +184,7 @@ nav {
     background: var(--outside);
     box-shadow: var(--shadow);
 
-    font-size: 20px;
+    font-size: 1.25rem;
 
     z-index: 2;
     top: 0;
@@ -185,8 +194,9 @@ nav {
     width: calc(100% - 30px);
 }
 
+/* Sticky keeps the navbar in the flow, so it never covers the page whatever its height (45 px alone, 95 px with the search box on a phone). */
 nav.fixed_navbar {
-    position: fixed;
+    position: sticky;
 }
 
 nav * {
@@ -242,6 +252,7 @@ figcaption {
     position: fixed;
     width: 100vw;
     height: 100vh;
+    height: 100dvh;
     bottom: 0;
     right: 0;
     visibility: hidden;
@@ -268,7 +279,9 @@ figcaption {
     align-items: center;
     text-align: center;
     max-width: 600px;
-    max-height: 500px;
+    max-height: 90dvh;
+    overflow-y: auto;
+    overscroll-behavior: contain;
     width: fit-content;
     height: fit-content;
     padding: 1rem;
@@ -278,6 +291,10 @@ figcaption {
     transition: all 0.1s ease-in-out;
 }
 
+.popup-inner > * {
+    flex-shrink: 0;
+}
+
 .popup-inner svg {
     display: unset !important;
     width: 35%;
@@ -285,7 +302,7 @@ figcaption {
     margin: 1rem;
 }
 
-.popup-inner h1 {
+.popup-inner h2 {
     color: var(--popup-text);
     margin: 1.5rem 1.5rem 1rem;
 }
@@ -303,22 +320,22 @@ figcaption {
     transition: all 0.1s ease-in-out;
 }
 
-#goback {
+.popup-goback {
     background: var(--popup-goback-background);
     color: var(--popup-goback-text);
 }
 
-#goback:not(.selected):hover {
+.popup-goback:not(.selected):hover {
     opacity: 0.8;
 }
 
-#toreddit {
+.popup-toreddit {
     background: var(--popup-toreddit-background);
     color: var(--popup-toreddit-text);
     border: 1px solid var(--popup-red);
 }
 
-#toreddit:not(.selected):hover {
+.popup-toreddit:not(.selected):hover {
     background: var(--popup-toreddit-text);
     color: var(--popup-toreddit-background);
 }
@@ -328,7 +345,7 @@ figcaption {
     opacity: 1;
 }
 
-#reddit_url {
+.popup-inner .popup-reddit-url {
     width: 80%;
     color: var(--popup-reddit-url);
     font-weight: 600;
@@ -444,8 +461,8 @@ aside {
 }
 
 .dot {
-    font-size: 12px;
-    opacity: 0.5;
+    font-size: 0.75rem;
+    color: var(--muted);
 }
 
 /* User & Subreddit */
@@ -499,7 +516,7 @@ aside {
 
 #user_title,
 #sub_title {
-    font-size: 20px;
+    font-size: 1.25rem;
     font-weight: bold;
 }
 
@@ -581,22 +598,25 @@ aside {
 
 /* Feeds */
 
-#feeds {
+#feeds,
+.prefs-group details {
     position: relative;
     border-radius: 5px;
     border: var(--panel-border);
     background-color: var(--outside);
     align-items: center;
     box-sizing: border-box;
-    font-size: 15px;
+    font-size: 0.9375rem;
     display: inline-block;
 }
 
-#feeds > summary {
+#feeds > summary,
+.prefs-group details > summary {
     padding: 8px 15px;
 }
 
-#feed_list {
+#feed_list,
+.prefs-group details > .helper {
     position: absolute;
     display: flex;
     min-width: 100%;
@@ -610,8 +630,8 @@ aside {
 }
 
 #feed_list > p {
-    font-size: 13px;
-    opacity: 0.5;
+    font-size: 0.8125rem;
+    color: var(--muted);
     padding: 5px 20px;
     margin-top: 10px;
 }
@@ -660,6 +680,7 @@ aside {
 
 select,
 #search,
+.commentQuery,
 #sort_options,
 #listing_options,
 #inside,
@@ -681,10 +702,11 @@ select {
     cursor: pointer;
 }
 
-#searchbox > * { font-size: 15px; }
+#searchbox > * { font-size: 0.9375rem; }
 
 select,
-#search {
+#search,
+.commentQuery {
     border: none;
     padding: 0 10px;
 
@@ -711,13 +733,13 @@ select,
     background: var(--highlighted);
 }
 
-#search {
+#search,
+.commentQuery {
     border-right: 2px var(--outside) solid;
     flex-grow: 1;
 }
 @media screen and (max-width: 800px) {
     #search { width: 0; }
-    #search.commentQuery { width: unset; }
 }
 
 #inside {
@@ -773,11 +795,16 @@ button.submit:hover > svg {
     overflow: auto;
 }
 
+/* The form clips its children, so their focus rings are drawn inside them. */
+#search_sort :focus-visible {
+    outline-offset: -2px;
+}
+
 #search_sort > *,
 .search_widget_divider_box > *,
 .search_widget_divider_box #sort_options {
     background: var(--highlighted);
-    font-size: 15px;
+    font-size: 0.9375rem;
 }
 
 #search_sort > #search {
@@ -795,6 +822,7 @@ button.submit:hover > svg {
 }
 
 #sort,
+#commentSearchForm,
 #search_sort {
     display: flex;
     align-items: stretch;
@@ -829,10 +857,6 @@ button.submit:hover > svg {
         min-width: unset;
         border-right: 0;
         border-bottom: 2px var(--outside) solid;
-    }
-
-    #search:focus {
-        outline: 0;
     }
 
     #search_sort > .search_widget_divider_box {
@@ -887,6 +911,17 @@ main > * > footer > a {
     background: var(--foreground);
 }
 
+/* The rows above clip anything outside them, so the focus ring is drawn inside the tab. */
+#sort_options > a:focus-visible,
+#listing_options > a:focus-visible {
+    outline-offset: -4px;
+}
+
+#sort_options > a.selected:focus-visible,
+#listing_options > a.selected:focus-visible {
+    outline-color: var(--foreground);
+}
+
 #search_subreddits {
     border-radius: 5px;
     background: var(--post);
@@ -935,14 +970,14 @@ a.search_subreddit:hover {
 
 .search_subreddit_name {
     font-weight: bold;
-    font-size: 16px;
+    font-size: 1rem;
 }
 
 .search_subreddit_description {
     text-overflow: ellipsis;
     overflow: hidden;
     white-space: nowrap;
-    opacity: 0.5;
+    color: var(--muted);
 }
 
 #more_subreddits {
@@ -996,17 +1031,13 @@ a.search_subreddit:hover {
 .post_score {
     padding-top: 19px;
     padding-left: 12px;
-    font-size: 13px;
+    font-size: 0.8125rem;
     font-weight: bold;
     color: var(--accent);
     grid-area: post_score;
     text-align: center;
     border-radius: 5px 0 0 5px;
     transition: 0.2s background;
-}
-
-.post_score .label {
-    display: none;
 }
 
 .post_header {
@@ -1020,7 +1051,7 @@ a.search_subreddit:hover {
 }
 
 .post_title {
-    font-size: 16px;
+    font-size: 1rem;
     font-weight: 500;
     line-height: 1.5;
     overflow-wrap: anywhere;
@@ -1032,11 +1063,25 @@ a.search_subreddit:hover {
     color: var(--visited);
 }
 
+/* The title of the post being read outranks the headings in its body (h1 is 1.375rem) */
+.post.highlighted .post_title {
+    font-size: 1.5rem;
+    font-weight: 600;
+    line-height: 1.3;
+}
+
+/* A feed preview shows only the start of a body, so its headings should not outshout the title */
+.post_preview .md :is(h1, h2, h3, h4, h5, h6),
+.post_preview :is(h1, h2, h3, h4, h5, h6) {
+    font-size: 1em;
+    font-weight: 600;
+}
+
 .post_notification {
     grid-area: post_notification;
     margin: 5px 15px;
     text-align: center;
-    font-size: 12px;
+    font-size: 0.75rem;
 }
 
 .post_notification a {
@@ -1049,7 +1094,7 @@ a.search_subreddit:hover {
     padding: 4px;
     margin-right: 5px;
     border-radius: 5px;
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: bold;
     vertical-align: text-top;
     line-height: 1.6;
@@ -1095,7 +1140,7 @@ a.search_subreddit:hover {
     margin-left: 5px;
     border: 1px solid var(--nsfw);
     padding: 3px;
-    font-size: 12px;
+    font-size: 0.75rem;
     border-radius: 5px;
     font-weight: bold;
 }
@@ -1105,7 +1150,7 @@ a.search_subreddit:hover {
     margin-left: 5px;
     border: 1px solid var(--spoiler);
     padding: 3px;
-    font-size: 12px;
+    font-size: 0.75rem;
     border-radius: 5px;
 }
 
@@ -1157,7 +1202,10 @@ a.search_subreddit:hover {
 .post_blurred .post_media_content:hover ~ .post_body,
 .post_blurred .post_media_content:has(~ .post_body:hover) *,
 .post_blurred .post_body:hover,
-.post_blurred .post_thumbnail:hover * {
+.post_blurred .post_thumbnail:hover *,
+.post_blurred:focus-within .post_media_content *,
+.post_blurred:focus-within .post_body,
+.post_blurred:focus-within .post_thumbnail * {
 	filter: none;
 }
 
@@ -1275,10 +1323,14 @@ a.search_subreddit:hover {
 .post_footer {
     display: flex;
     justify-content: space-between;
-    opacity: 0.5;
-    font-size: 14px;
+    color: var(--muted);
+    font-size: 0.875rem;
     grid-area: post_footer;
     margin: 5px 20px 15px 12px;
+}
+
+.post_footer :is(ul, li, p) {
+    color: inherit;
 }
 
 .post_comments {
@@ -1415,7 +1467,7 @@ a.search_subreddit:hover {
 }
 
 .comment_title {
-    font-size: 20px;
+    font-size: 1.25rem;
 }
 .comment_link {
     text-decoration: underline;
@@ -1430,7 +1482,7 @@ a.search_subreddit:hover {
     padding: 5px;
     margin-right: 5px;
     border-radius: 5px;
-    font-size: 12px;
+    font-size: 0.75rem;
     font-weight: bold;
 }
 
@@ -1440,7 +1492,7 @@ a.search_subreddit:hover {
     min-width: 40px;
     border-radius: 5px;
     padding: 10px 0;
-    font-size: 14px;
+    font-size: 0.875rem;
     font-weight: 600;
 }
 
@@ -1502,7 +1554,7 @@ a.search_subreddit:hover {
 }
 
 .comment_body_filtered {
-    opacity: 0.4;
+    color: var(--muted);
     font-weight: normal;
     font-style: italic;
     padding: 5px 5px;
@@ -1525,19 +1577,29 @@ a.search_subreddit:hover {
 }
 
 .created {
-    opacity: 0.5;
+    color: var(--muted);
 }
 
 .edited {
-    opacity: 0.4;
+    color: var(--muted);
     font-style: italic;
-    font-size: 14px;
+    font-size: 0.875rem;
 }
 
 .line {
     width: 2px;
     height: 100%;
-    background: var(--foreground);
+    /* --foreground is 1.1:1 against the page, so the thread could not be followed. 60% of the text colour is at least 3:1 in every theme. */
+    background: color-mix(in srgb, var(--text) 60%, var(--background));
+    /* An unpainted 8 px edge on each side makes the line easy to hit. */
+    padding: 0 8px;
+    background-clip: content-box;
+    box-sizing: content-box;
+}
+
+/* collapse_thread.js is loaded on post pages only */
+#column_one:has(> .post.highlighted) .line {
+    cursor: pointer;
 }
 
 summary.comment_data {
@@ -1605,7 +1667,7 @@ summary.comment_data {
 
 .compact .post_header {
     margin: 11px 15px 2.5px 12px;
-    font-size: 14px;
+    font-size: 0.875rem;
 }
 
 .compact .post_title,
@@ -1642,10 +1704,31 @@ summary.comment_data {
     max-width: 450px;
 }
 
+/* Feedback after saving, resetting or importing settings */
+.settings_notice {
+    margin: 0 0 10px;
+    padding: 10px 15px;
+    border-radius: 5px;
+    border-left: 4px solid var(--accent);
+    background: var(--post);
+}
+
+.settings_notice_error {
+    border-left-color: var(--admin);
+}
+
+#reset_form {
+    margin-bottom: 20px;
+}
+
 #settings_note {
-    font-size: 14px;
+    font-size: 0.875rem;
     margin-top: 10px;
     opacity: 0.75;
+}
+
+#copy_status {
+    margin-left: 8px;
 }
 
 #settings_note a {
@@ -1665,11 +1748,12 @@ summary.comment_data {
     margin: 0 0 5px;
 }
 
-.prefs legend {
+.prefs legend,
+.prefs h2 {
     font-weight: 500;
     border-bottom: 1px solid var(--highlighted);
-    font-size: 18px;
-    padding-bottom: 10px;
+    font-size: 1.125rem;
+    padding: 0 2px 10px; /* the 2px sides are a legend's default, which a heading lacks */
     margin-bottom: 7px;
     width: 100%;
     float: left; /* places the legend inside the (invisible) border, instead of vertically centered on top border*/
@@ -1678,7 +1762,7 @@ summary.comment_data {
 .prefs-group {
     display: flex;
     width: 100%;
-    height: 35px;
+    min-height: 35px;
     align-items: center;
     margin-top: 7px;
 }
@@ -1744,8 +1828,22 @@ input[type="submit"] {
 
 /* Markdown */
 
+.md,
+.comment_body,
+.post_body,
+#wiki {
+    line-height: 1.55;
+}
+
 .md {
     width: 100%;
+}
+
+/* A line of prose past about 70 characters is hard to follow; wide mode would stretch it to ~190.
+   Code blocks, tables and images keep the full width and scroll inside it. */
+.wide .md > :is(p, ul, ol, blockquote, h1, h2, h3, h4, h5, h6),
+.wide p.comment_body {
+    max-width: 70ch;
 }
 
 .md > p:not(:first-child) {
@@ -1762,22 +1860,22 @@ input[type="submit"] {
 }
 
 .md h1 {
-    font-size: 22px;
+    font-size: 1.375rem;
 }
 .md h2 {
-    font-size: 20px;
+    font-size: 1.25rem;
 }
 .md h3 {
-    font-size: 18px;
+    font-size: 1.125rem;
 }
 .md h4 {
-    font-size: 16px;
+    font-size: 1rem;
 }
 .md h5 {
-    font-size: 14px;
+    font-size: 0.875rem;
 }
 .md h6 {
-    font-size: 12px;
+    font-size: 0.75rem;
 }
 
 .md blockquote {
@@ -1792,18 +1890,24 @@ input[type="submit"] {
     color: var(--accent);
 }
 
+.md a {
+    text-decoration: underline;
+}
+
 .md .md-spoiler-text,
 .md-spoiler-text a {
     background: var(--highlighted);
     color: transparent;
 }
 
-.md-spoiler-text:hover {
+.md-spoiler-text:hover,
+.md-spoiler-text:focus-within {
     background: var(--foreground);
     color: var(--text);
 }
 
-.md-spoiler-text:hover a {
+.md-spoiler-text:hover a,
+.md-spoiler-text:focus-within a {
     background: var(--foreground);
     color: var(--accent);
 }
@@ -1832,12 +1936,14 @@ input[type="submit"] {
 }
 
 .md code {
-    font-family: monospace, sans-serif;
-    font-size: 14px;
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.875rem;
 }
 
 .md code:not(.md pre > code) {
     background: var(--highlighted);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
 }
 
 /* Tables */
@@ -1867,6 +1973,32 @@ th {
 }
 
 /* Errors */
+
+.empty_feed {
+    margin: 20px 0;
+    text-align: center;
+}
+
+.recovery_links {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 5px 20px;
+    margin: 10px 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.recovery_links a,
+#error .retry {
+    color: var(--accent);
+    text-decoration: underline;
+}
+
+.gallery_count {
+    color: var(--muted);
+    font-size: 0.875rem;
+}
 
 #error {
     text-align: center;
@@ -1978,16 +2110,13 @@ th {
         max-width: 100%;
     }
     #user { margin: 0 0 20px; }
-    
-    body.fixed_navbar {
-        min-height: calc(100vh - 75px);
-        padding-top: 45px;
-        #subreddit { margin: 49px 0 0; }
-        #user { margin: 49px 0 20px 0; }
-        #settings { margin-top: 48px; }
-        div.post.highlighted { margin-top: 49px; }
-        main:not(:has(div + aside)) { #sort { margin-top: 49px; } }
-        #column_one:has(div.post.highlighted + #commentQueryForms) { #sort { margin-top: 0 } }
+
+    /* A subreddit's panel is about 500 px tall; read the posts first and keep the panel below them */
+    main:has(> aside #subreddit) {
+        flex-direction: column;
+    }
+    main:has(> aside #subreddit) > aside {
+        margin-top: 20px;
     }
 
     #sidebar {
@@ -2045,7 +2174,7 @@ th {
     }
 
     .post_header {
-        font-size: 14px;
+        font-size: 0.875rem;
     }
     .post_footer {
         margin-left: 15px;
@@ -2064,7 +2193,12 @@ th {
     }
 
     .line {
-        margin-left: 5px;
+        margin-left: 9px;
+    }
+
+    /* Each level steps right by 19 px, which leaves about 20 characters per line by level 8. From the fifth level on, a reply stays level with its parent. */
+    .comment .comment .comment .comment .comment {
+        margin-left: -31px;
     }
 
     /* .thread { margin-left: -5px; } */
@@ -2085,7 +2219,7 @@ th {
     }
 
     .comment_data::marker {
-        font-size: 25px;
+        font-size: 1.5625rem;
     }
     .user-comment .comment_data > .comment_link {
         order: 2;
@@ -2106,7 +2240,7 @@ th {
     .comment_score {
         min-width: 34px;
         height: 20px;
-        font-size: 12px;
+        font-size: 0.75rem;
         padding: 7px 0px;
         margin-right: -5px;
         align-content: center;
@@ -2135,6 +2269,12 @@ th {
     }
 }
 
+.hls_error {
+    margin-top: 8px;
+    font-size: 0.875rem;
+    opacity: 0.85;
+}
+
 .quality-selector {
     border: 2px var(--outside) solid;
     margin-top: 8px;
@@ -2149,4 +2289,137 @@ th {
 .quality-selector option:hover {
     background-color: var(--accent);
     color: var(--text);
+}
+
+/* Touch screens: a finger needs about 44 px, and the controls above are 24-39 px. */
+@media (pointer: coarse) {
+    nav #links a,
+    #sort_options > a,
+    #listing_options > a {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 44px;
+        min-height: 44px;
+        box-sizing: border-box;
+    }
+
+    summary,
+    .subscribe,
+    .unsubscribe,
+    .filter,
+    .unfilter,
+    .copy,
+    .import,
+    #save,
+    button.submit,
+    #feed_list > a,
+    .search_subreddit,
+    .deeper_replies,
+    main > * > footer > a,
+    select,
+    #search,
+    .commentQuery,
+    #sort_options,
+    #listing_options,
+    #inside,
+    #searchbox > *,
+    #sort_submit,
+    input[type="text"] {
+        min-height: 44px;
+        box-sizing: border-box;
+    }
+
+    summary {
+        align-content: center;
+    }
+
+    /* Grow footer link hit areas vertically without overlapping adjacent links or popup buttons. */
+    .post_footer > a,
+    .post_footer > p > a,
+    #post_links > li > a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+        padding: 0 6px;
+    }
+
+    .popup-inner a {
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
+    }
+
+    button.submit,
+    #sort_submit {
+        min-width: 44px;
+        justify-content: center;
+    }
+
+    .prefs-group {
+        min-height: 44px;
+    }
+
+    /* The whole row is the target: the label fills it and toggles its checkbox. */
+    .prefs-group > label,
+    #inside > label {
+        align-self: stretch;
+        display: flex;
+        align-items: center;
+    }
+
+    input[type="checkbox"] {
+        width: 1.5rem;
+        height: 1.5rem;
+    }
+}
+
+/* Motion: system settings ask for less of it, so nothing slides, fades or scrolls smoothly. */
+@media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+        transition: none !important;
+        animation: none !important;
+        scroll-behavior: auto !important;
+    }
+}
+
+/* Forced colours replace every background and keep only what the page draws with system colours. */
+@media (forced-colors: active) {
+    svg {
+        stroke: CanvasText;
+    }
+
+    #sort_options > a.selected,
+    #listing_options > a.selected,
+    #feed_list > .selected {
+        text-decoration: underline;
+    }
+
+    .subscribe,
+    .unsubscribe,
+    .filter,
+    .unfilter,
+    .copy,
+    .import,
+    #save,
+    button.submit,
+    .popup-inner a {
+        border: 1px solid ButtonText;
+    }
+
+    /* Forced colours paint the whole border box, so the line gives up its wider hit area. */
+    .line {
+        padding: 0;
+        background-color: CanvasText;
+    }
+
+    /* The reveal-on-focus spoiler would show its text at once if its colours were replaced. */
+    .md-spoiler-text,
+    .md-spoiler-text a {
+        forced-color-adjust: none;
+    }
 }

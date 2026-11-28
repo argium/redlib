@@ -1,9 +1,11 @@
 use crate::dbg_msg;
 use crate::oauth::{force_refresh_token, token_daemon, Oauth, OauthBackendImpl};
 use crate::server::RequestExt;
+use crate::single_flight::SingleFlight;
 use crate::utils::{format_url, Post};
 use arc_swap::ArcSwap;
 use cached::proc_macro::cached;
+use cached::{Cached, TimedSizedCache};
 use futures_lite::future::block_on;
 use futures_lite::{future::Boxed, FutureExt};
 use hyper::{body::Buf, header, Body, Request as HyperRequest, Response as HyperResponse};
@@ -13,8 +15,9 @@ use serde_json::Value;
 use std::borrow::Cow;
 use std::result::Result;
 use std::sync::atomic::Ordering;
-use std::sync::atomic::{AtomicBool, AtomicU16};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU64};
 use std::sync::LazyLock;
+use std::time::Duration;
 use wreq::dns::{Addrs, Name, Resolve, Resolving};
 use wreq::redirect::Policy;
 use wreq::{header as wreq_header, Client as WreqClient, Method, Response as WreqResponse};
@@ -32,8 +35,18 @@ const ALTERNATIVE_REDDIT_DNS_HOST: &str = "dualstack.reddit.map.fastly.net";
 
 pub static CLIENT: LazyLock<WreqClient> = LazyLock::new(build_client);
 
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+// Applies to Reddit API and GitHub calls. wreq restarts it after each chunk
+// but checks it before reading the next one, so it also fires when the
+// consumer stops reading. Media proxying overrides it with MEDIA_READ_TIMEOUT.
+const READ_TIMEOUT: Duration = Duration::from_secs(30);
+// Long enough that a visitor can pause a proxied video without the upstream
+// stream being cut off, while a dead upstream is still eventually released.
+const MEDIA_READ_TIMEOUT: Duration = Duration::from_secs(60 * 60);
+
 pub static OAUTH_CLIENT: LazyLock<ArcSwap<Oauth>> = LazyLock::new(|| {
 	let client = block_on(Oauth::new());
+	client.record_token_expiry();
 	tokio::spawn(token_daemon());
 	ArcSwap::new(client.into())
 });
@@ -41,6 +54,10 @@ pub static OAUTH_CLIENT: LazyLock<ArcSwap<Oauth>> = LazyLock::new(|| {
 pub static OAUTH_RATELIMIT_REMAINING: AtomicU16 = AtomicU16::new(99);
 
 pub static OAUTH_IS_ROLLING_OVER: AtomicBool = AtomicBool::new(false);
+
+/// Unix time (seconds) when the installed OAuth token stops working; `0` until one is installed.
+/// `/healthz` reads this instead of touching `OAUTH_CLIENT`, which is private to the OAuth module.
+pub static OAUTH_TOKEN_EXPIRES_AT: AtomicU64 = AtomicU64::new(0);
 
 const URL_PAIRS: [(&str, &str); 2] = [
 	(ALTERNATIVE_REDDIT_URL_BASE, ALTERNATIVE_REDDIT_URL_BASE_HOST),
@@ -74,6 +91,10 @@ impl Resolve for RedditDnsResolver {
 }
 
 pub fn build_client() -> WreqClient {
+	build_client_with_timeouts(CONNECT_TIMEOUT, READ_TIMEOUT, true)
+}
+
+fn build_client_with_timeouts(connect_timeout: Duration, read_timeout: Duration, use_env_proxy: bool) -> WreqClient {
 	// Keeping this list short to aid in privacy.
 	// The more emulations, the more unique a fingerprint each instance has.
 	// But some emulations should increase evasiveness.
@@ -87,12 +108,16 @@ pub fn build_client() -> WreqClient {
 		.build();
 
 	info!("Building Wreq client with random emulation");
-	WreqClient::builder()
+	let mut builder = WreqClient::builder()
 		.emulation(emulation)
 		.redirect(Policy::none())
 		.dns_resolver(RedditDnsResolver)
-		.build()
-		.expect("Should always be able to build a client")
+		.connect_timeout(connect_timeout)
+		.read_timeout(read_timeout);
+	if !use_env_proxy {
+		builder = builder.no_proxy();
+	}
+	builder.build().expect("Should always be able to build a client")
 }
 
 /// Gets the canonical path for a resource on Reddit. This is accomplished by
@@ -182,6 +207,22 @@ pub async fn canonical_path(path: String, tries: i8) -> Result<Option<String>, S
 	}
 }
 
+/// Starts a GET for proxied media (/img, /vid, /hls), whose body is streamed
+/// to the visitor at the visitor's pace.
+fn media_get(client: &WreqClient, uri: wreq::Uri) -> wreq::RequestBuilder {
+	client.get(uri).read_timeout(MEDIA_READ_TIMEOUT)
+}
+
+/// Sends a media request, giving up if the upstream has not sent response
+/// headers within `header_timeout`. The long media read timeout set by
+/// [`media_get`] would otherwise also apply to that wait.
+async fn send_media(builder: wreq::RequestBuilder, header_timeout: Duration) -> Result<WreqResponse, String> {
+	tokio::time::timeout(header_timeout, builder.send())
+		.await
+		.map_err(|_| format!("Upstream media server sent no response headers within {header_timeout:?}"))?
+		.map_err(|e| e.to_string())
+}
+
 pub async fn proxy(req: HyperRequest<Body>, format: &str) -> Result<HyperResponse<Body>, String> {
 	let mut url = format!("{format}?{}", req.uri().query().unwrap_or_default());
 
@@ -194,7 +235,7 @@ pub async fn proxy(req: HyperRequest<Body>, format: &str) -> Result<HyperRespons
 	// First parameter is target URL (mandatory).
 	let wreq_uri = wreq::Uri::try_from(url).map_err(|_| "Couldn't parse URL".to_string())?;
 
-	let mut builder = CLIENT.get(wreq_uri);
+	let mut builder = media_get(&CLIENT, wreq_uri);
 
 	// Copy useful headers from original request
 	for &key in &["Range", "If-Modified-Since", "Cache-Control"] {
@@ -212,30 +253,26 @@ pub async fn proxy(req: HyperRequest<Body>, format: &str) -> Result<HyperRespons
 	// This is needed or Reddit will redirect us to a /media landing page that just renders the image.
 	builder = builder.header(wreq_header::ACCEPT, "*/*");
 
-	builder
-		.send()
-		.await
-		.map(|mut res| {
-			let headers = res.headers_mut();
+	send_media(builder, READ_TIMEOUT).await.map(|mut res| {
+		let headers = res.headers_mut();
 
-			let mut rm = |key: &str| headers.remove(key);
+		let mut rm = |key: &str| headers.remove(key);
 
-			rm("access-control-expose-headers");
-			rm("server");
-			rm("vary");
-			rm("etag");
-			rm("x-cdn");
-			rm("x-cdn-client-region");
-			rm("x-cdn-name");
-			rm("x-cdn-server-region");
-			rm("x-reddit-cdn");
-			rm("x-reddit-video-features");
-			rm("Nel");
-			rm("Report-To");
+		rm("access-control-expose-headers");
+		rm("server");
+		rm("vary");
+		rm("etag");
+		rm("x-cdn");
+		rm("x-cdn-client-region");
+		rm("x-cdn-name");
+		rm("x-cdn-server-region");
+		rm("x-reddit-cdn");
+		rm("x-reddit-video-features");
+		rm("Nel");
+		rm("Report-To");
 
-			res.into_hyper_response()
-		})
-		.map_err(|e| e.to_string())
+		res.into_hyper_response()
+	})
 }
 
 /// Makes a GET request to Reddit at `path`. By default, this will honor HTTP
@@ -402,9 +439,135 @@ fn comments_logical_path(path: &str) -> String {
 	format!("/r/{subreddit}/comments/{tail}")
 }
 
-/// Make a request to a Reddit API and parse the JSON response
-#[cached(size = 100, time = 30, result = true)]
+/// Explains a Reddit response whose body is empty or not JSON. Returns the
+/// message to show and whether the OAuth token should be rolled over, which
+/// only helps when the token itself is rate limited. `None` means the failure
+/// is a plain parse error.
+fn upstream_failure(status: u16, body_is_empty: bool, ratelimit_remaining: Option<f32>, reset: Option<&str>) -> Option<(String, bool)> {
+	let rate_limited = status == 429 || ratelimit_remaining.is_some_and(|remaining| remaining <= 0.0);
+	if rate_limited {
+		let reset = reset.map(|reset| format!(" Rate limit will reset in: {reset}")).unwrap_or_default();
+		return Some((format!("Reddit rate limit exceeded. Try refreshing in a few seconds.{reset}"), true));
+	}
+	match status {
+		403 => Some((
+			"Reddit blocked this request (HTTP 403). This instance may be rate limited or blocked by Reddit.".to_string(),
+			false,
+		)),
+		500..=599 => Some(("Reddit is having issues, check if there's an outage".to_string(), false)),
+		_ if body_is_empty => Some((format!("Reddit returned an empty response (HTTP {status})"), false)),
+		_ => None,
+	}
+}
+
+/// Reads Reddit's rate-limit headers independently: a zero remaining header
+/// must still be honoured even if reset or used is absent.
+fn parse_ratelimit_headers(headers: &wreq_header::HeaderMap) -> (Option<f32>, Option<String>, Option<String>) {
+	let header = |name| headers.get(name).and_then(|val| val.to_str().ok()).map(str::to_owned);
+	let remaining = header("x-ratelimit-remaining").and_then(|val| val.parse::<f32>().ok());
+	let reset = header("x-ratelimit-reset");
+	let used = header("x-ratelimit-used");
+	(remaining, reset, used)
+}
+
+/// Classifies a parsed Reddit JSON body alongside its HTTP status. Returns the
+/// response value or `(error_message, should_refresh_token)`.
+fn classify_json_body(status: u16, json: Value, ratelimit_remaining: Option<f32>, reset: Option<&str>, path: &str) -> Result<Value, (String, bool)> {
+	if let Some(data) = json.get("data") {
+		if data.get("is_suspended").and_then(Value::as_bool) == Some(true) {
+			return Err(("suspended".into(), false));
+		}
+	}
+
+	if json["error"].is_i64() {
+		if json["message"] == "Unauthorized" {
+			return Err(("OAuth token has expired. Please refresh the page!".to_string(), true));
+		}
+		if let Some(reason @ ("quarantined" | "gated" | "private" | "banned")) = json["reason"].as_str() {
+			return Err((reason.to_string(), false));
+		}
+	}
+
+	// Rate-limited and generic 403/5xx responses can still carry a JSON body (e.g.
+	// `{"message": "Too Many Requests", "error": 429}`). Check status after the
+	// specific 401/quarantined/gated/private/banned reasons above so those keep
+	// their tailored error pages.
+	if status == 429 || status == 403 || (500..=599).contains(&status) {
+		if let Some(failure) = upstream_failure(status, false, ratelimit_remaining, reset) {
+			return Err(failure);
+		}
+	}
+
+	if json["error"].is_i64() {
+		return Err((format!("Reddit error {} \"{}\": {} | {path}", json["error"], json["reason"], json["message"]), false));
+	}
+
+	Ok(json)
+}
+
+/// How long one fetch from Reddit may take in total. The client's read timeout restarts after
+/// every chunk, so on its own a slow trickle of bytes could hold the fetch (and everyone
+/// waiting on it) open indefinitely.
+const JSON_DEADLINE: Duration = Duration::from_secs(20);
+
+/// Concurrent `json` calls for one path wait on a single fetch. Unlike `#[cached(sync_writes)]`
+/// this keeps an entry only while the fetch runs, so a stream of distinct paths cannot grow it.
+static JSON_FLIGHTS: LazyLock<SingleFlight<(String, bool), Result<Value, String>>> = LazyLock::new(SingleFlight::new);
+
+/// Bounded 30-second cache of successful Reddit JSON responses. Written inside the elected
+/// `SingleFlight` work so a caller arriving right as a flight finishes sees the cached entry
+/// instead of starting a duplicate upstream fetch.
+static JSON_CACHE: LazyLock<std::sync::Mutex<TimedSizedCache<(String, bool), Value>>> =
+	LazyLock::new(|| std::sync::Mutex::new(TimedSizedCache::with_size_and_lifespan(100, Duration::from_secs(30))));
+
+/// Fetches `key` through `cache` and `flights`, caching `Ok` values before the flight entry
+/// is removed so no window exists for a duplicate upstream fetch.
+async fn cached_single_flight<K, V, E, Fut>(
+	cache: &std::sync::Mutex<TimedSizedCache<K, V>>,
+	flights: &SingleFlight<K, Result<V, E>>,
+	key: K,
+	fetch: impl FnOnce() -> Fut,
+) -> Result<V, E>
+where
+	K: std::hash::Hash + Eq + Clone,
+	V: Clone,
+	E: Clone,
+	Fut: std::future::Future<Output = Result<V, E>>,
+{
+	if let Some(value) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cache_get(&key).cloned() {
+		return Ok(value);
+	}
+	flights
+		.run(key.clone(), async move {
+			// Recheck once elected in case a preceding leader populated the cache while we queued.
+			if let Some(value) = cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cache_get(&key).cloned() {
+				return Ok(value);
+			}
+			let result = fetch().await;
+			if let Ok(value) = &result {
+				cache.lock().unwrap_or_else(std::sync::PoisonError::into_inner).cache_set(key, value.clone());
+			}
+			result
+		})
+		.await
+}
+
+/// Fails `work` with an error once `limit` has passed.
+async fn within<T>(limit: Duration, work: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+	tokio::time::timeout(limit, work)
+		.await
+		.unwrap_or_else(|_| Err(format!("Reddit did not answer within {} seconds. Try refreshing in a few seconds.", limit.as_secs())))
+}
+
+/// Make a request to a Reddit API and parse the JSON response. Concurrent calls for the same
+/// path share one upstream request instead of each spending a rate-limit slot, and share its
+/// error too; successful results are cached for 30 seconds.
 pub async fn json(path: String, quarantine: bool) -> Result<Value, String> {
+	let key = (path.clone(), quarantine);
+	cached_single_flight(&JSON_CACHE, &JSON_FLIGHTS, key, || within(JSON_DEADLINE, fetch_json(path, quarantine))).await
+}
+
+async fn fetch_json(path: String, quarantine: bool) -> Result<Value, String> {
 	// Closure to quickly build errors
 	let err = |msg: &str, e: String, path: String| -> Result<Value, String> {
 		// eprintln!("{} - {}: {}", url, msg, e);
@@ -426,25 +589,16 @@ pub async fn json(path: String, quarantine: bool) -> Result<Value, String> {
 		Ok(response) => {
 			let status = response.status();
 
-			let reset: Option<String> = if let (Some(remaining), Some(reset), Some(used)) = (
-				response.headers().get("x-ratelimit-remaining").and_then(|val| val.to_str().ok().map(|s| s.to_string())),
-				response.headers().get("x-ratelimit-reset").and_then(|val| val.to_str().ok().map(|s| s.to_string())),
-				response.headers().get("x-ratelimit-used").and_then(|val| val.to_str().ok().map(|s| s.to_string())),
-			) {
+			let (ratelimit_remaining, reset, used) = parse_ratelimit_headers(response.headers());
+			if let Some(val) = ratelimit_remaining {
 				trace!(
-					"Ratelimit remaining: Header says {remaining}, we have {current_rate_limit}. Resets in {reset}. Rollover: {}. Ratelimit used: {used}",
+					"Ratelimit remaining: Header says {val}, we have {current_rate_limit}. Resets in {}. Rollover: {}. Ratelimit used: {}",
+					reset.as_deref().unwrap_or("unknown"),
 					if is_rolling_over { "yes" } else { "no" },
+					used.as_deref().unwrap_or("unknown"),
 				);
-
-				// If can parse remaining as a float, round to a u16 and save
-				if let Ok(val) = remaining.parse::<f32>() {
-					OAUTH_RATELIMIT_REMAINING.store(val.round() as u16, Ordering::SeqCst);
-				}
-
-				Some(reset)
-			} else {
-				None
-			};
+				OAUTH_RATELIMIT_REMAINING.store(val.round() as u16, Ordering::SeqCst);
+			}
 
 			// asynchronously aggregate the chunks of the body
 			match hyper::body::aggregate(response.into_hyper_response()).await {
@@ -452,68 +606,36 @@ pub async fn json(path: String, quarantine: bool) -> Result<Value, String> {
 					let has_remaining = body.has_remaining();
 
 					if !has_remaining {
-						// Rate limited, so spawn a force_refresh_token()
-						tokio::spawn(force_refresh_token());
-						return match reset {
-							Some(val) => Err(format!(
-								"Reddit rate limit exceeded. Try refreshing in a few seconds.\
-								 Rate limit will reset in: {val}"
-							)),
-							None => Err("Reddit rate limit exceeded".to_string()),
-						};
+						let (message, refresh) = upstream_failure(status.as_u16(), true, ratelimit_remaining, reset.as_deref()).expect("empty bodies are always failures");
+						if refresh {
+							tokio::spawn(force_refresh_token());
+						}
+						return Err(message);
 					}
 
 					// Parse the response from Reddit as JSON
 					match serde_json::from_reader(body.reader()) {
-						Ok(value) => {
-							let json: Value = value;
-
-							// If user is suspended
-							if let Some(data) = json.get("data") {
-								if let Some(is_suspended) = data.get("is_suspended").and_then(Value::as_bool) {
-									if is_suspended {
-										return Err("suspended".into());
-									}
-								}
-							}
-
-							// If Reddit returned an error
-							if json["error"].is_i64() {
-								// OAuth token has expired; http status 401
-								if json["message"] == "Unauthorized" {
+						Ok(value) => match classify_json_body(status.as_u16(), value, ratelimit_remaining, reset.as_deref(), &path) {
+							Ok(json) => Ok(json),
+							Err((message, refresh)) => {
+								if refresh {
 									error!("Forcing a token refresh");
-									let () = force_refresh_token().await;
-									return Err("OAuth token has expired. Please refresh the page!".to_string());
+									// Spawned so a visitor disconnecting cannot cancel the refresh part-way.
+									tokio::spawn(force_refresh_token());
 								}
-
-								// Handle quarantined
-								if json["reason"] == "quarantined" {
-									return Err("quarantined".into());
-								}
-								// Handle gated
-								if json["reason"] == "gated" {
-									return Err("gated".into());
-								}
-								// Handle private subs
-								if json["reason"] == "private" {
-									return Err("private".into());
-								}
-								// Handle banned subs
-								if json["reason"] == "banned" {
-									return Err("banned".into());
-								}
-
-								Err(format!("Reddit error {} \"{}\": {} | {path}", json["error"], json["reason"], json["message"]))
-							} else {
-								Ok(json)
+								Err(message)
 							}
-						}
+						},
 						Err(e) => {
 							error!("Got an invalid response from reddit {e}. Status code: {status}");
-							if status.is_server_error() {
-								Err("Reddit is having issues, check if there's an outage".to_string())
-							} else {
-								err("Failed to parse page JSON data", e.to_string(), path)
+							match upstream_failure(status.as_u16(), false, ratelimit_remaining, reset.as_deref()) {
+								Some((message, refresh)) => {
+									if refresh {
+										tokio::spawn(force_refresh_token());
+									}
+									Err(message)
+								}
+								None => err("Failed to parse page JSON data", e.to_string(), path),
 							}
 						}
 					}
@@ -596,6 +718,182 @@ mod tests {
 
 	const POPULAR_URL: &str = "/r/popular/hot.json?&raw_json=1&geo_filter=GLOBAL";
 
+	#[tokio::test]
+	async fn json_deadline_gives_up_on_a_slow_upstream() {
+		let never_answers = std::future::pending::<Result<Value, String>>();
+		let outcome = within(Duration::from_millis(50), never_answers).await;
+		assert!(outcome.unwrap_err().contains("did not answer"));
+
+		let answers = async { Ok::<_, String>(serde_json::json!({ "ok": true })) };
+		assert_eq!(within(Duration::from_secs(5), answers).await.unwrap()["ok"], true);
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn media_request_times_out_waiting_for_headers() {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		// Accept the connection, then never send response headers.
+		let silent_upstream = tokio::spawn(async move {
+			let (_socket, _) = listener.accept().await.unwrap();
+			std::future::pending::<()>().await;
+		});
+
+		let client = build_client_with_timeouts(Duration::from_secs(1), Duration::from_millis(100), false);
+		let uri = wreq::Uri::try_from(format!("http://{address}/image.png")).unwrap();
+		let outcome = tokio::time::timeout(Duration::from_secs(5), send_media(media_get(&client, uri), Duration::from_millis(200))).await;
+		silent_upstream.abort();
+
+		let error = outcome
+			.expect("the media request must give up waiting for headers")
+			.expect_err("a silent upstream must fail");
+		assert!(error.contains("headers"), "{error}");
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn media_stream_survives_a_paused_reader() {
+		use futures_lite::StreamExt;
+		use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		let upstream = tokio::spawn(async move {
+			let (mut socket, _) = listener.accept().await.unwrap();
+			// Read the request head before answering, as a real server would.
+			let mut request = Vec::new();
+			while !request.ends_with(b"\r\n\r\n") {
+				let mut byte = [0; 1];
+				socket.read_exact(&mut byte).await.unwrap();
+				request.push(byte[0]);
+			}
+			let response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nfirst\r\n6\r\nsecond\r\n0\r\n\r\n";
+			socket.write_all(response.as_bytes()).await.unwrap();
+			std::future::pending::<()>().await;
+		});
+
+		let client = build_client_with_timeouts(Duration::from_secs(1), Duration::from_millis(100), false);
+		let uri = wreq::Uri::try_from(format!("http://{address}/video")).unwrap();
+		let mut body = media_get(&client, uri).send().await.unwrap().bytes_stream();
+		let first = body.next().await.unwrap().unwrap();
+		// The visitor pauses the video for longer than the API read timeout.
+		tokio::time::sleep(Duration::from_millis(300)).await;
+		let mut rest = Vec::new();
+		while let Some(chunk) = body.next().await {
+			rest.extend_from_slice(&chunk.expect("a paused media stream must not time out"));
+		}
+		upstream.abort();
+
+		assert_eq!([first.as_ref(), rest.as_slice()].concat(), b"firstsecond");
+	}
+
+	#[tokio::test(flavor = "multi_thread")]
+	async fn client_times_out_when_upstream_stops_responding() {
+		let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let address = listener.local_addr().unwrap();
+		// Accept the connection, then never send a response.
+		let silent_upstream = tokio::spawn(async move {
+			let (_socket, _) = listener.accept().await.unwrap();
+			std::future::pending::<()>().await;
+		});
+
+		let client = build_client_with_timeouts(Duration::from_secs(1), Duration::from_millis(200), false);
+		let outcome = tokio::time::timeout(Duration::from_secs(5), client.get(format!("http://{address}/")).send()).await;
+		silent_upstream.abort();
+
+		let error = outcome.expect("the client must give up before the test deadline").expect_err("a silent upstream must fail");
+		assert!(error.is_timeout(), "{error}");
+	}
+
+	#[test]
+	fn classify_json_body_handles_json_429_and_generic_403_without_breaking_sub_errors() {
+		// JSON 429 must trigger rate-limit handling and token refresh.
+		let (msg, refresh) = classify_json_body(429, serde_json::json!({"message": "Too Many Requests", "error": 429}), None, Some("15"), "/r/rust").unwrap_err();
+		assert!(refresh && msg.contains("rate limit") && msg.contains("15"), "{msg}");
+
+		// Valid JSON 429 without an integer error field must not be treated as success.
+		let (_, refresh) = classify_json_body(429, serde_json::json!({"detail": "slow down"}), None, None, "/r/rust").unwrap_err();
+		assert!(refresh);
+
+		// Generic JSON 403 gets the blocked message; specific private/quarantined/gated/banned reasons stay intact.
+		let (msg, refresh) = classify_json_body(403, serde_json::json!({"message": "Forbidden", "error": 403}), None, None, "/r/rust").unwrap_err();
+		assert!(!refresh && msg.contains("HTTP 403"), "{msg}");
+		for reason in ["private", "quarantined", "gated", "banned"] {
+			let (msg, refresh) = classify_json_body(403, serde_json::json!({"error": 403, "reason": reason}), None, None, "/r/rust").unwrap_err();
+			assert_eq!((msg.as_str(), refresh), (reason, false));
+		}
+
+		// 401 Unauthorized still refreshes.
+		let (_, refresh) = classify_json_body(401, serde_json::json!({"error": 401, "message": "Unauthorized"}), None, None, "/r/rust").unwrap_err();
+		assert!(refresh);
+	}
+
+	#[test]
+	fn parse_ratelimit_headers_reads_remaining_without_reset_or_used() {
+		let mut headers = wreq_header::HeaderMap::new();
+		headers.insert("x-ratelimit-remaining", wreq_header::HeaderValue::from_static("0"));
+		let (remaining, reset, used) = parse_ratelimit_headers(&headers);
+		assert_eq!(remaining, Some(0.0));
+		assert_eq!(reset, None);
+		assert_eq!(used, None);
+		let (_, refresh) = upstream_failure(200, true, remaining, reset.as_deref()).unwrap();
+		assert!(refresh, "remaining=0 alone must trigger a token refresh");
+	}
+
+	#[tokio::test]
+	async fn cached_single_flight_populates_cache_before_releasing_flight() {
+		use std::sync::atomic::AtomicUsize;
+		let cache = std::sync::Mutex::new(TimedSizedCache::with_size_and_lifespan(16, Duration::from_secs(30)));
+		let flights = SingleFlight::new();
+		let calls = AtomicUsize::new(0);
+
+		let first = cached_single_flight(&cache, &flights, "k", || async {
+			calls.fetch_add(1, Ordering::SeqCst);
+			Ok::<_, String>(42)
+		})
+		.await;
+		assert_eq!(first, Ok(42));
+		// Cache must already contain the value immediately after `run` returns.
+		assert_eq!(cache.lock().unwrap().cache_get(&"k"), Some(&42));
+		let second = cached_single_flight(&cache, &flights, "k", || async {
+			calls.fetch_add(1, Ordering::SeqCst);
+			Ok::<_, String>(99)
+		})
+		.await;
+		assert_eq!(second, Ok(42));
+		assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+		// Errors are not cached.
+		let err = cached_single_flight(&cache, &flights, "bad", || async { Err::<i32, _>("nope".to_string()) }).await;
+		assert_eq!(err, Err("nope".to_string()));
+		assert_eq!(cache.lock().unwrap().cache_get(&"bad"), None);
+	}
+
+	#[test]
+	fn upstream_failure_refreshes_the_token_only_when_rate_limited() {
+		let (message, refresh) = upstream_failure(429, false, None, Some("42")).expect("429 is a failure");
+		assert!(refresh);
+		assert!(message.contains("rate limit") && message.contains("42"), "{message}");
+
+		let (_, refresh) = upstream_failure(200, true, Some(0.0), None).expect("an exhausted quota is a failure");
+		assert!(refresh);
+
+		let (message, refresh) = upstream_failure(200, true, Some(57.0), None).expect("an empty body is a failure");
+		assert!(!refresh, "quota remains, so the token is fine");
+		assert!(message.contains("empty") && message.contains("200"), "{message}");
+	}
+
+	#[test]
+	fn upstream_failure_explains_blocks_and_outages() {
+		let (message, refresh) = upstream_failure(403, false, Some(57.0), None).expect("403 HTML is a failure");
+		assert!(!refresh);
+		assert!(message.contains("403"), "{message}");
+
+		let (message, refresh) = upstream_failure(503, false, None, None).expect("5xx is a failure");
+		assert!(!refresh);
+		assert!(message.contains("outage"), "{message}");
+
+		assert_eq!(upstream_failure(200, false, Some(57.0), None), None, "a non-empty 200 is a plain parse error");
+	}
+
 	#[test]
 	fn test_reddit_dns_name_uses_fastly_dualstack_alias() {
 		assert_eq!(reddit_dns_name("www.reddit.com"), ALTERNATIVE_REDDIT_DNS_HOST);
@@ -656,12 +954,14 @@ mod tests {
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
+	#[ignore = "requires live Reddit"]
 	async fn test_rate_limit_check() {
 		rate_limit_check().await.unwrap();
 	}
 
 	#[test]
 	#[sealed_test(env = [("REDLIB_DEFAULT_SUBSCRIPTIONS", "rust")])]
+	#[ignore = "requires live Reddit"]
 	fn test_default_subscriptions() {
 		tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap().block_on(async {
 			let subscriptions = get_setting("REDLIB_DEFAULT_SUBSCRIPTIONS");
@@ -673,12 +973,14 @@ mod tests {
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
+	#[ignore = "requires live Reddit"]
 	async fn test_localization_popular() {
 		let val = json(POPULAR_URL.to_string(), false).await.unwrap();
 		assert_eq!("GLOBAL", val["data"]["geo_filter"].as_str().unwrap());
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
+	#[ignore = "requires live Reddit"]
 	async fn test_obfuscated_share_link() {
 		let share_link = "/r/rust/s/kPgq8WNHRK".into();
 		// Correct link without share parameters
@@ -687,6 +989,7 @@ mod tests {
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
+	#[ignore = "requires live Reddit"]
 	async fn test_private_sub() {
 		let link = json("/r/suicide/about.json?raw_json=1".into(), true).await;
 		assert!(link.is_err());
@@ -694,6 +997,7 @@ mod tests {
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
+	#[ignore = "requires live Reddit"]
 	async fn test_banned_sub() {
 		let link = json("/r/aaa/about.json?raw_json=1".into(), true).await;
 		assert!(link.is_err());
@@ -701,6 +1005,7 @@ mod tests {
 	}
 
 	#[tokio::test(flavor = "multi_thread")]
+	#[ignore = "requires live Reddit"]
 	async fn test_gated_sub() {
 		// quarantine to false to specifically catch when we _don't_ catch it
 		let link = json("/r/drugs/about.json?raw_json=1".into(), false).await;

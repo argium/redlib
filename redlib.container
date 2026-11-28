@@ -6,9 +6,11 @@ AutoUpdate=registry
 ContainerName=redlib
 DropCapability=ALL
 EnvironmentFile=.env
-HealthCmd=["wget","--spider","-q","--tries=1","http://localhost:8080/settings"]
-HealthInterval=5m
-HealthTimeout=3s
+HealthCmd=redlib --healthcheck
+HealthInterval=30s
+HealthStartPeriod=30s
+HealthTimeout=10s
+HealthRetries=3
 Image=quay.io/redlib/redlib:latest
 NoNewPrivileges=true
 PublishPort=8080:8080

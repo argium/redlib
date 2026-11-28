@@ -148,6 +148,7 @@ impl InstanceInfo {
 				["Show NSFW", &convert(&self.config.default_show_nsfw)],
 				["Blur NSFW", &convert(&self.config.default_blur_nsfw)],
 				["Use HLS", &convert(&self.config.default_use_hls)],
+				["Autoplay videos", &convert(&self.config.default_autoplay_videos)],
 				["Hide HLS notification", &convert(&self.config.default_hide_hls_notification)],
 				["Subscriptions", &convert(&self.config.default_subscriptions)],
 				["Filters", &convert(&self.config.default_filters)],
@@ -185,6 +186,7 @@ impl InstanceInfo {
                     Default show NSFW: {:?}\n
                     Default blur NSFW: {:?}\n
                     Default use HLS: {:?}\n
+                    Default autoplay videos: {:?}\n
                     Default hide HLS notification: {:?}\n
                     Default subscriptions: {:?}\n
                     Default filters: {:?}\n",
@@ -195,10 +197,10 @@ impl InstanceInfo {
 					self.deploy_unix_ts,
 					self.compile_mode,
 					self.config.sfw_only,
+					self.config.pushshift,
 					self.config.enable_rss,
 					self.config.full_url,
 					self.config.default_remove_default_feeds,
-					self.config.pushshift,
 					self.config.banner,
 					self.config.default_hide_awards,
 					self.config.default_hide_score,
@@ -212,6 +214,7 @@ impl InstanceInfo {
 					self.config.default_show_nsfw,
 					self.config.default_blur_nsfw,
 					self.config.default_use_hls,
+					self.config.default_autoplay_videos,
 					self.config.default_hide_hls_notification,
 					self.config.default_subscriptions,
 					self.config.default_filters,
@@ -232,4 +235,43 @@ struct MessageTemplate {
 	body: String,
 	prefs: Preferences,
 	url: String,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use std::collections::HashMap;
+
+	/// Every configurable value is distinct, so a value printed under the wrong label is visible.
+	fn info_with_distinct_values() -> InstanceInfo {
+		let value = |name: &str| Some(format!("value-of-{name}"));
+		InstanceInfo {
+			config: Config {
+				sfw_only: value("sfw_only"),
+				pushshift: value("pushshift"),
+				enable_rss: value("enable_rss"),
+				full_url: value("full_url"),
+				default_remove_default_feeds: value("default_remove_default_feeds"),
+				default_autoplay_videos: value("default_autoplay_videos"),
+				..Config::default()
+			},
+			..InstanceInfo::default()
+		}
+	}
+
+	#[test]
+	fn wiki_info_and_config_info_txt_values_sit_under_their_labels() {
+		let text = info_with_distinct_values().to_string(&StringType::Raw);
+		let lines: HashMap<&str, &str> = text.lines().filter_map(|line| line.trim().split_once(": ")).collect();
+		for (label, field) in [
+			("SFW only", "sfw_only"),
+			("Pushshift frontend", "pushshift"),
+			("RSS enabled", "enable_rss"),
+			("Full URL", "full_url"),
+			("Remove default feeds", "default_remove_default_feeds"),
+			("Default autoplay videos", "default_autoplay_videos"),
+		] {
+			assert_eq!(lines.get(label).copied(), Some(format!("Some(\"value-of-{field}\")").as_str()), "{label}");
+		}
+	}
 }
