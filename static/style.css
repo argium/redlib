@@ -43,7 +43,7 @@
 :root,
 .dark {
     /* Default & fallback theme (dark) */
-    --accent: #dc6170;
+    --accent: #e06c7a;
     --green: #5cff85;
     --text: white;
     --foreground: #222;
@@ -51,7 +51,7 @@
     --outside: #1f1f1f;
     --post: #161616;
     --panel-border: 1px solid #333;
-    --highlighted: #333;
+    --highlighted: #292929;
     --visited: #aaa;
     --muted: #9f9f9f;
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
@@ -1071,6 +1071,7 @@ a.search_subreddit:hover {
 }
 
 /* A feed preview shows only the start of a body, so its headings should not outshout the title */
+.post_preview .md :is(h1, h2, h3, h4, h5, h6),
 .post_preview :is(h1, h2, h3, h4, h5, h6) {
     font-size: 1em;
     font-weight: 600;
@@ -2333,12 +2334,22 @@ th {
         align-content: center;
     }
 
-    /* Padding and a matching negative margin grow the target without moving the text. */
-    .post_footer a,
-    #post_links a {
-        display: inline-block;
-        padding: 14px 10px;
-        margin: -14px -10px;
+    /* Grow footer link hit areas vertically without overlapping adjacent links or popup buttons. */
+    .post_footer > a,
+    .post_footer > p > a,
+    #post_links > li > a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+        padding: 0 6px;
+    }
+
+    .popup-inner a {
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        box-sizing: border-box;
     }
 
     button.submit,

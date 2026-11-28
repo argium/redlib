@@ -26,7 +26,7 @@
 		<!-- PWA Manifest -->
 		<link rel="manifest" type="application/json" href="/manifest.json">
 		<link rel="shortcut icon" type="image/x-icon" href="/favicon.ico"> 
-		<link rel="stylesheet" type="text/css" href="/style.css?v={{ env!("CARGO_PKG_VERSION") }}">
+		<link rel="stylesheet" type="text/css" href="/style.css?v={{ crate::assets::stylesheet_version() }}">
 		{% endblock %}
 		</head>
 	<body data-video-quality="{{ prefs.video_quality }}" class="

@@ -207,7 +207,7 @@ pub struct Server {
 const DEFAULT_HEADER_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Docker's `stop` waits 10 s before SIGKILL; finish inside that so shutdown is clean.
-const DEFAULT_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
+pub const DEFAULT_SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
 
 #[macro_export]
 macro_rules! headers(
@@ -505,9 +505,9 @@ async fn serve_route(
 			Ok(res)
 		}
 		Ok(Err(msg)) => {
+			// Do not log `msg` even at debug: transport errors (such as wreq media failures)
+			// embed the upstream URI, which carries the visitor's path and query.
 			warn!("{method} {route} handler returned an error");
-			// Reddit errors end in `| <path and query>`, which is the visitor's browsing.
-			debug!("{method} {route} handler error: {}", msg.split('|').next().unwrap_or_default().trim_end());
 			new_boilerplate(def_headers, req_headers, 500, if is_head { Body::empty() } else { Body::from(msg) }).await
 		}
 		Err(_panic) => {
@@ -799,17 +799,18 @@ pub struct StaticBody {
 impl StaticBody {
 	/// Compresses `plain` now, on the calling thread. Bodies too small to be worth compressing, or
 	/// that fail to compress, are served as they are.
-	pub fn new(plain: &'static [u8]) -> Self {
+	pub fn new(plain: impl Into<Bytes>) -> Self {
+		let plain: Bytes = plain.into();
 		let encode = |compressor| {
 			if plain.len() < COMPRESSION_MIN_BYTES {
 				return None;
 			}
-			compress_body_blocking(compressor, plain).ok().map(Bytes::from)
+			compress_body_blocking(compressor, &plain).ok().map(Bytes::from)
 		};
 		Self {
-			plain: Bytes::from_static(plain),
 			gzip: encode(CompressionType::Gzip),
 			brotli: encode(CompressionType::Brotli),
+			plain,
 		}
 	}
 
@@ -1123,7 +1124,7 @@ mod tests {
 	}
 
 	fn err_route(_: Request<Body>) -> BoxResponse {
-		Box::pin(async { Err("Reddit error: boom | /r/secretsub/hot.json?q=hiddenterm".to_string()) })
+		Box::pin(async { Err("error sending request for url (https://i.redd.it/secretsub.jpg?q=hiddenterm)".to_string()) })
 	}
 
 	#[tokio::test]
@@ -1141,12 +1142,12 @@ mod tests {
 
 		let logs = logs.lock().unwrap();
 		let error_lines: Vec<&String> = logs.iter().filter(|(_, line)| line.contains("GET /fails handler")).map(|(_, line)| line).collect();
-		assert!(
-			error_lines.iter().any(|line| line.contains("boom")),
-			"the failure reason should still be logged: {error_lines:?}"
-		);
+		assert!(!error_lines.is_empty(), "handler error should still be logged: {logs:?}");
 		for line in &error_lines {
-			assert!(!line.contains("secretsub") && !line.contains("hiddenterm"), "log line leaks the request path: {line}");
+			assert!(
+				!line.contains("secretsub") && !line.contains("hiddenterm") && !line.contains("i.redd.it"),
+				"log line leaks the request path or URI: {line}"
+			);
 		}
 	}
 

@@ -182,7 +182,7 @@ fn subreddit_results(listing: &serde_json::Value, sfw_only: bool) -> Vec<Subredd
 		.map(ToOwned::to_owned)
 		.unwrap_or_default()
 		.iter()
-		.filter(|subreddit| !(sfw_only && subreddit["data"]["over18"].as_bool().unwrap_or_default()))
+		.filter(|subreddit| !(sfw_only && subreddit["data"]["over18"].as_bool() != Some(false)))
 		.map(|subreddit| {
 			// For each subreddit from subreddit list
 			// Fetch subreddit icon either from the community_icon or icon_img value
@@ -363,6 +363,7 @@ mod tests {
 	fn listing() -> serde_json::Value {
 		serde_json::json!({ "data": { "children": [
 			{ "data": { "display_name": "family", "url": "/r/family/", "over18": false } },
+			{ "data": { "display_name": "unknown", "url": "/r/unknown/" } },
 			{ "data": { "display_name": "adult", "url": "/r/adult/", "over18": true } },
 		] } })
 	}
@@ -376,7 +377,7 @@ mod tests {
 	#[test]
 	fn search_results_keep_nsfw_communities_when_the_instance_allows_them() {
 		let names: Vec<_> = subreddit_results(&listing(), false).into_iter().map(|s| s.name).collect();
-		assert_eq!(names, ["family", "adult"]);
+		assert_eq!(names, ["family", "unknown", "adult"]);
 	}
 
 	#[test]

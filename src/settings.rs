@@ -150,9 +150,8 @@ fn set_cookies_method(req: Request<Body>, remove_cookies: bool) -> Response<Body
 
 	let path = match form.get("redirect") {
 		Some(value) => {
-			let value = value.replace("%26", "&").replace("%23", "#");
 			if value.starts_with('/') {
-				value
+				value.to_string()
 			} else {
 				format!("/{value}")
 			}
@@ -305,12 +304,14 @@ pub async fn update(req: Request<Body>) -> Result<Response<Body>, String> {
 }
 
 pub async fn encoded_restore(req: Request<Body>) -> Result<Response<Body>, String> {
-	let body = read_body_limited(req.into_body(), ENCODED_RESTORE_MAX_BYTES).await?;
-
-	let restore_query = form_urlencoded::parse(&body)
-		.find(|(key, _)| key == "encoded_prefs")
-		.map(|(_, value)| value)
-		.ok_or_else(|| "encoded_prefs parameter not found in request body".to_string())
+	let restore_query = read_body_limited(req.into_body(), ENCODED_RESTORE_MAX_BYTES)
+		.await
+		.and_then(|body| {
+			form_urlencoded::parse(&body)
+				.find(|(key, _)| key == "encoded_prefs")
+				.map(|(_, value)| value.into_owned())
+				.ok_or_else(|| "encoded_prefs parameter not found in request body".to_string())
+		})
 		.and_then(|encoded_prefs| Preferences::from_export_string(&encoded_prefs, ENCODED_RESTORE_MAX_DECOMPRESSED_BYTES))
 		.and_then(|prefs| prefs.to_urlencoded());
 
@@ -416,13 +417,23 @@ mod tests {
 	async fn dos_and_shortlink_limits_encoded_restore_body_is_capped_while_streaming() {
 		// 2 MiB offered in 16 KiB chunks; the cap is 1 MiB.
 		let (body, pulled) = counting_body(16 * 1024, 128);
-		let result = encoded_restore(Request::post("/settings/encoded-restore").body(body).unwrap()).await;
-		assert!(result.is_err());
+		let response = encoded_restore(Request::post("/settings/encoded-restore").body(body).unwrap()).await.unwrap();
+		assert_eq!(response.headers()["Location"], "/settings?status=import_failed");
+		assert!(response.headers().get("Set-Cookie").is_none());
 		assert!(
 			pulled.load(Ordering::SeqCst) <= 65,
 			"the reader must stop near the cap, but pulled {} chunks",
 			pulled.load(Ordering::SeqCst)
 		);
+	}
+
+	#[tokio::test]
+	async fn settings_update_preserves_percent_encoded_query_values_in_redirect() {
+		let return_uri = "/search?q=fish%26chips%23fresh";
+		let encoded = percent_encoding::utf8_percent_encode(return_uri, percent_encoding::NON_ALPHANUMERIC).to_string();
+		let req = Request::get(format!("/settings/update/?use_hls=on&redirect={encoded}")).body(Body::empty()).unwrap();
+		let response = update(req).await.unwrap();
+		assert_eq!(response.headers()["Location"], return_uri);
 	}
 
 	#[tokio::test]

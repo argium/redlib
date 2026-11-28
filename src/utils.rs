@@ -306,13 +306,15 @@ impl GalleryMedia {
 				} else {
 					image["u"].as_str().unwrap_or_default()
 				};
+				// Normalise before emptiness check so placeholder values like "default" are dropped too.
+				let url = format_url(url);
 				if media["status"] != "valid" || url.is_empty() {
 					return None;
 				}
 
 				// Construct gallery items
 				Some(Self {
-					url: format_url(url),
+					url,
 					width: image["x"].as_i64().unwrap_or_default(),
 					height: image["y"].as_i64().unwrap_or_default(),
 					caption: item["caption"].as_str().unwrap_or_default().to_string(),
@@ -381,8 +383,9 @@ impl Post {
 		for post in post_list {
 			let data = &post["data"];
 
-			// Listings, search and RSS all come through here, so this is where an SFW-only instance drops NSFW posts.
-			if sfw_only() && data["over_18"].as_bool().unwrap_or_default() {
+			// Listings, search and RSS all come through here. On an SFW-only instance, require an explicit
+			// `over_18: false` so an entry without a usable classification cannot slip through.
+			if sfw_only() && data["over_18"].as_bool() != Some(false) {
 				continue;
 			}
 
@@ -771,6 +774,10 @@ impl Preferences {
 	/// Reads a string made by [`Preferences::to_export_string`], or by a release from before exports
 	/// were versioned. The input is untrusted: it fails rather than inflating past `max_decompressed_bytes`.
 	pub fn from_export_string(encoded: &str, max_decompressed_bytes: u64) -> Result<Self, String> {
+		// base2048 2.0.2 indexes a fixed 4,340-entry table directly by code point and panics above it.
+		if encoded.chars().any(|c| (c as usize) >= base2048::DEC_TABLE.len()) {
+			return Err("Failed to decode base2048 encoded preferences".to_string());
+		}
 		let compressed = base2048::decode(encoded).ok_or_else(|| "Failed to decode base2048 encoded preferences".to_string())?;
 		let payload = deflate_decompress_limited(compressed, max_decompressed_bytes)?;
 		let body = match payload.strip_prefix(EXPORT_MAGIC) {
@@ -2052,6 +2059,7 @@ mod tests {
 	fn listing_fixture() -> serde_json::Value {
 		serde_json::json!({ "data": { "after": "t3_next", "children": [
 			{ "data": { "id": "nsfw1", "title": "adult", "over_18": true } },
+			{ "data": { "id": "unknown1", "title": "unclassified" } },
 			{ "data": { "id": "safe1", "title": "family", "over_18": false } },
 		] } })
 	}
@@ -2063,7 +2071,7 @@ mod tests {
 	#[tokio::test]
 	async fn sfw_only_enforcement_keeps_posts_when_instance_allows_nsfw() {
 		let (posts, after) = Post::from_listing(&listing_fixture()).await.unwrap();
-		assert_eq!(posts.iter().map(|post| post.id.as_str()).collect::<Vec<_>>(), ["nsfw1", "safe1"]);
+		assert_eq!(posts.iter().map(|post| post.id.as_str()).collect::<Vec<_>>(), ["nsfw1", "unknown1", "safe1"]);
 		assert_eq!(after, "t3_next");
 	}
 
@@ -2402,6 +2410,8 @@ How`s your monitor by the way? Any IPS bleed whatsoever? I either got lucky or t
 			assert!(Preferences::from_export_string(&export_string_of(&payload), TEST_DECOMPRESSED_LIMIT).is_err(), "{what}");
 		}
 		assert!(Preferences::from_export_string("not an export", TEST_DECOMPRESSED_LIMIT).is_err());
+		// Code points above base2048's decode table (e.g. emoji) must return Err instead of panicking.
+		assert!(Preferences::from_export_string("😀🚀", TEST_DECOMPRESSED_LIMIT).is_err());
 
 		let future = [b"RLP\x63".as_slice(), &valid[4..]].concat();
 		let error = Preferences::from_export_string(&export_string_of(&future), TEST_DECOMPRESSED_LIMIT).unwrap_err();

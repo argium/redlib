@@ -179,7 +179,14 @@ impl Config {
 fn read_config_file(name: &str) -> Result<Option<Config>, String> {
 	match read_to_string(name) {
 		Ok(contents) => toml::from_str(&contents).map(Some).map_err(|e| format!("Failed to parse {name}: {e}")),
-		Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+		Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+			// A dangling symlink reports NotFound from read_to_string even though the config entry exists.
+			if std::fs::symlink_metadata(name).is_ok() {
+				Err(format!("Failed to read {name}: {e}"))
+			} else {
+				Ok(None)
+			}
+		}
 		Err(e) => Err(format!("Failed to read {name}: {e}")),
 	}
 }
@@ -267,6 +274,21 @@ mod tests {
 	fn startup_config_and_bind_accepts_missing_files() {
 		let config = Config::try_load().unwrap();
 		assert_eq!(config.sfw_only, None);
+	}
+
+	#[test]
+	#[sealed_test]
+	fn startup_config_and_bind_fails_on_dangling_symlink() {
+		#[cfg(unix)]
+		let created = std::os::unix::fs::symlink("missing-target.toml", "redlib.toml");
+		#[cfg(windows)]
+		let created = std::os::windows::fs::symlink_file("missing-target.toml", "redlib.toml");
+		// On Windows without Developer Mode / SeCreateSymbolicLinkPrivilege, skip rather than fail setup.
+		if created.is_err() {
+			return;
+		}
+		let error = Config::try_load().expect_err("a dangling redlib.toml symlink must fail startup");
+		assert!(error.contains("redlib.toml"), "{error}");
 	}
 
 	#[test]

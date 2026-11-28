@@ -68,7 +68,7 @@
 <div class="empty_feed">
 	<p>No posts were found.</p>
 	<ul class="recovery_links">
-		<li><a href="{{ reload_url }}">Reload</a></li>
+		<li><a href="{{ crate::utils::sanitize_redirect_path(reload_url) }}">Reload</a></li>
 		{% if !widen_url.is_empty() %}<li><a href="{{ widen_url }}">{{ widen_label }}</a></li>{% endif %}
 		<li><a href="/">Go home</a></li>
 	</ul>

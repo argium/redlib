@@ -100,11 +100,18 @@
                     newVideo.play();
                 });
 
-                // Errors count against the budget only until the stream loads again, so a few
-                // hiccups spread over a long video do not add up to giving up.
+                // Network errors reset once a fragment downloads; media errors reset only once
+                // playback actually advances, so a downloaded but unplayable fragment cannot
+                // renew the media budget forever.
                 hls.on(Hls.Events.FRAG_LOADED, function () {
                     recoveries.network = 0;
-                    recoveries.media = 0;
+                });
+                var lastPlaybackTime = 0;
+                newVideo.addEventListener('timeupdate', function () {
+                    if (newVideo.currentTime > lastPlaybackTime) {
+                        lastPlaybackTime = newVideo.currentTime;
+                        recoveries.media = 0;
+                    }
                 });
 
                 hls.on(Hls.Events.ERROR, function (event, data) {
@@ -113,14 +120,14 @@
                         return;
                     }
 
-                    if (data.type === Hls.ErrorType.NETWORK_ERROR && recoveries.network < MAX_RECOVERIES) {
+                    if (data.type === Hls.ErrorTypes.NETWORK_ERROR && recoveries.network < MAX_RECOVERIES) {
                         // Wait 1 s, 2 s, then 4 s so a dead stream is not hammered.
                         setTimeout(function () {
                             if (!gaveUp) {
                                 hls.startLoad();
                             }
                         }, 1000 * 2 ** recoveries.network++);
-                    } else if (data.type === Hls.ErrorType.MEDIA_ERROR && recoveries.media < MAX_RECOVERIES) {
+                    } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR && recoveries.media < MAX_RECOVERIES) {
                         recoveries.media++;
                         hls.recoverMediaError();
                     } else {

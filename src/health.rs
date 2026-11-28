@@ -63,20 +63,29 @@ pub fn probe_addresses(listen: SocketAddr) -> Vec<SocketAddr> {
 	}
 }
 
-/// How long `--healthcheck` waits for each address before giving up.
+/// Total budget for `--healthcheck` across all candidate addresses (e.g. IPv4 + IPv6 for `[::]`).
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Asks the server that listens on `listen` for `/healthz`. `Ok` means it answered `200`;
 /// the error says why it did not, for the `--healthcheck` message.
 pub async fn probe(listen: SocketAddr) -> Result<(), String> {
+	probe_addresses_within(&probe_addresses(listen), PROBE_TIMEOUT).await
+}
+
+async fn probe_addresses_within(addresses: &[SocketAddr], budget: Duration) -> Result<(), String> {
+	let deadline = tokio::time::Instant::now() + budget;
 	let mut last_error = String::new();
-	for address in probe_addresses(listen) {
+	for &address in addresses {
+		let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+		if remaining.is_zero() {
+			return Err(format!("timed out after {budget:?} ({last_error})"));
+		}
 		let uri: hyper::Uri = format!("http://{address}/healthz").parse().map_err(|e| format!("bad probe address {address}: {e}"))?;
-		last_error = match tokio::time::timeout(PROBE_TIMEOUT, hyper::Client::new().get(uri)).await {
+		last_error = match tokio::time::timeout(remaining, hyper::Client::new().get(uri)).await {
 			Ok(Ok(response)) if response.status() == 200 => return Ok(()),
 			Ok(Ok(response)) => format!("{address} answered {}", response.status()),
 			Ok(Err(e)) => format!("cannot reach {address}: {e}"),
-			Err(_) => format!("{address} did not answer within {PROBE_TIMEOUT:?}"),
+			Err(_) => return Err(format!("{address} did not answer within {budget:?}")),
 		};
 	}
 	Err(last_error)
@@ -85,6 +94,26 @@ pub async fn probe(listen: SocketAddr) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[tokio::test]
+	async fn healthz_and_shutdown_probe_shares_one_deadline_across_addresses() {
+		let first = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let second = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+		let addresses = [first.local_addr().unwrap(), second.local_addr().unwrap()];
+		let silent = tokio::spawn(async move {
+			let _a = first.accept().await;
+			let _b = second.accept().await;
+			std::future::pending::<()>().await;
+		});
+
+		let started = tokio::time::Instant::now();
+		let result = probe_addresses_within(&addresses, Duration::from_millis(200)).await;
+		let elapsed = started.elapsed();
+		silent.abort();
+
+		assert!(result.is_err());
+		assert!(elapsed < Duration::from_millis(380), "shared budget should not double across two addresses: {elapsed:?}");
+	}
 
 	#[test]
 	fn healthz_and_shutdown_probe_addresses_turn_wildcards_into_loopback() {

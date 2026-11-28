@@ -104,17 +104,6 @@ async fn resource(body: &str, content_type: &str, cache: bool) -> Result<Respons
 	Ok(res)
 }
 
-async fn style() -> Result<Response<Body>, String> {
-	Ok(
-		Response::builder()
-			.status(200)
-			.header("content-type", "text/css")
-			.header("Cache-Control", "public, max-age=1209600, s-maxage=86400")
-			.body(assets::stylesheet().into())
-			.unwrap_or_default(),
-	)
-}
-
 /// Parses a boolean flag value. An empty value (`IPV4_ONLY=` from a compose file whose
 /// host variable is unset) counts as false; anything but a boolean word is an error.
 fn parse_flag(value: &str) -> Result<bool, String> {
@@ -192,8 +181,7 @@ fn cli() -> Command {
 		)
 }
 
-#[tokio::main]
-async fn main() -> ExitCode {
+fn main() -> ExitCode {
 	// Load environment variables
 	_ = dotenvy::dotenv();
 
@@ -203,22 +191,29 @@ async fn main() -> ExitCode {
 	// Parse arguments first so `--help` and `--version` work with a broken redlib.toml.
 	let matches = cli().get_matches();
 
+	let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("Failed to create Tokio runtime");
+
 	// A probe only talks to the local server, so it must not need a valid redlib.toml or Reddit.
 	if matches.get_flag("healthcheck") {
-		return healthcheck(&matches).await;
+		return runtime.block_on(healthcheck(&matches));
 	}
 
 	// A broken redlib.toml must stop startup before anything else happens.
 	info!("Evaluating config.");
 	LazyLock::force(&config::CONFIG);
 
-	match run(&matches).await {
+	let exit_code = match runtime.block_on(run(&matches)) {
 		Ok(()) => ExitCode::SUCCESS,
 		Err(message) => {
 			eprintln!("{message}");
 			ExitCode::FAILURE
 		}
-	}
+	};
+
+	// Dropping a Tokio runtime waits indefinitely for any running spawn_blocking job (such as
+	// an in-flight Brotli compression). Bound that wait so process exit honours the deadline too.
+	runtime.shutdown_timeout(server::DEFAULT_SHUTDOWN_DEADLINE);
+	exit_code
 }
 
 /// Builds the server with its default headers and every route. Nothing here touches the
@@ -241,7 +236,7 @@ fn build_app(hsts: Option<&str>) -> server::Server {
 	}
 
 	// Read static files
-	app.at("/style.css").get(|_| style().boxed());
+	app.at("/style.css").get(|req| async move { assets::stylesheet_response(&req) }.boxed());
 	app
 		.at("/manifest.json")
 		.get(|_| resource(include_str!("../static/manifest.json"), "application/json", false).boxed());
@@ -474,31 +469,34 @@ fn listener_address(matches: &ArgMatches) -> Result<SocketAddr, String> {
 /// Decides the socket address to bind. Without `address` the wildcard address of
 /// the chosen family is used (IPv6, which also accepts IPv4 on most systems, unless
 /// `-4`). An explicit `address` is never replaced, and must match the family flag.
+/// Scoped IPv6 addresses such as `[fe80::1%3]` or `fe80::1%3` are supported.
 fn resolve_listener(address: Option<&str>, port: &str, ipv4_only: bool, ipv6_only: bool) -> Result<SocketAddr, String> {
 	if ipv4_only && ipv6_only {
 		return Err("--ipv4-only (-4) and --ipv6-only (-6) cannot be used together".to_string());
 	}
 	let port: u16 = port.parse().map_err(|_| format!("Cannot parse {port} as a port (expected 0-65535)"))?;
 
-	let ip = match address {
+	match address {
 		Some(address) => {
-			let ip: IpAddr = address
-				.trim_start_matches('[')
-				.trim_end_matches(']')
+			let formatted = if address.starts_with('[') || !address.contains(':') {
+				format!("{address}:{port}")
+			} else {
+				format!("[{address}]:{port}")
+			};
+			let socket: SocketAddr = formatted
 				.parse()
 				.map_err(|_| format!("Cannot parse {address} as an IP address (examples: 0.0.0.0, [::], 127.0.0.1)"))?;
-			if ipv4_only && ip.is_ipv6() {
+			if ipv4_only && socket.is_ipv6() {
 				return Err(format!("--ipv4-only (-4) conflicts with the IPv6 address {address}"));
 			}
-			if ipv6_only && ip.is_ipv4() {
+			if ipv6_only && socket.is_ipv4() {
 				return Err(format!("--ipv6-only (-6) conflicts with the IPv4 address {address}"));
 			}
-			ip
+			Ok(socket)
 		}
-		None if ipv4_only => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
-		None => IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-	};
-	Ok(SocketAddr::new(ip, port))
+		None if ipv4_only => Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)),
+		None => Ok(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)),
+	}
 }
 
 /// Reddit's short post ids are base-36. Anything else (`/Login`, `/ab.cde`) is
@@ -568,7 +566,11 @@ async fn fetch_instances() -> Result<String, String> {
 /// remote is unreachable or answers with anything but success. `CLIENT` does
 /// not follow redirects, so a 3xx is an error too.
 async fn fetch_text(url: &str) -> Result<String, String> {
-	let response = CLIENT.get(url).send().await.map_err(|e| format!("Failed to request {url}: {e}"))?;
+	fetch_text_with(&CLIENT, url).await
+}
+
+async fn fetch_text_with(client: &wreq::Client, url: &str) -> Result<String, String> {
+	let response = client.get(url).send().await.map_err(|e| format!("Failed to request {url}: {e}"))?;
 	if !response.status().is_success() {
 		return Err(format!("Failed to request {url}: HTTP {}", response.status()));
 	}
@@ -595,11 +597,15 @@ mod tests {
 	use super::*;
 	use sealed_test::prelude::*;
 
+	fn loopback_client() -> wreq::Client {
+		wreq::Client::builder().redirect(wreq::redirect::Policy::none()).no_proxy().build().unwrap()
+	}
+
 	#[tokio::test(flavor = "multi_thread")]
 	async fn unreachable_update_source_becomes_bad_gateway() {
 		// Bind and immediately release a port so nothing is listening on it.
 		let address = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-		let fetched = fetch_text(&format!("http://{address}/commits.atom")).await;
+		let fetched = fetch_text_with(&loopback_client(), &format!("http://{address}/commits.atom")).await;
 		assert!(fetched.is_err());
 		assert_eq!(text_response(fetched, "application/atom+xml").status(), 502);
 	}
@@ -662,6 +668,16 @@ mod tests {
 	#[sealed_test(env = [("IPV4_ONLY", "on"), ("IPV6_ONLY", "on")])]
 	fn startup_config_and_bind_conflicting_env_flags_are_errors() {
 		assert!(listener_for(&[]).unwrap_err().contains("cannot be used together"));
+	}
+
+	#[test]
+	fn startup_config_and_bind_accepts_scoped_ipv6_and_rejects_unmatched_brackets() {
+		let scoped = resolve_listener(Some("[fe80::1%3]"), "8080", false, false).unwrap();
+		assert_eq!(scoped.to_string(), "[fe80::1%3]:8080");
+		assert_eq!(resolve_listener(Some("fe80::1%3"), "8080", false, true).unwrap().to_string(), "[fe80::1%3]:8080");
+		assert!(resolve_listener(Some("[fe80::1%3]"), "8080", true, false).is_err());
+		assert!(resolve_listener(Some("[::1"), "8080", false, false).is_err());
+		assert!(resolve_listener(Some("::1]"), "8080", false, false).is_err());
 	}
 
 	#[test]
@@ -914,8 +930,9 @@ mod tests {
 				.unwrap();
 		});
 
-		let fetched = fetch_text(&format!("http://{address}/commits.atom")).await;
+		let fetched = fetch_text_with(&loopback_client(), &format!("http://{address}/commits.atom")).await;
 		upstream.abort();
-		assert!(fetched.is_err(), "an empty redirect body must not be served and cached as the feed");
+		let error = fetched.expect_err("an empty redirect body must not be served and cached as the feed");
+		assert!(error.contains("HTTP 301"), "{error}");
 	}
 }

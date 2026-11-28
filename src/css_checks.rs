@@ -17,7 +17,7 @@ const TEXT_ON_SURFACES: [(&str, &[&str]); 5] = [
 	// `.comment_body_filtered` is muted text on a highlighted comment.
 	("muted", &["background", "post", "outside", "foreground", "highlighted"]),
 	("visited", &["post", "foreground"]),
-	("accent", &["background", "post", "outside", "foreground"]),
+	("accent", &["background", "post", "outside", "foreground", "highlighted"]),
 	// Selected tabs and buttons draw `--foreground` text on an `--accent` fill.
 	("foreground", &["accent"]),
 ];

@@ -1,11 +1,11 @@
 #![allow(clippy::cmp_owned)]
 
+use crate::utils;
 use crate::utils::{
 	catch_random, error, filter_posts, format_num, format_url, gating_metadata, get_filters, html_page, info, nsfw_landing, param, redirect, rewrite_urls, setting, sfw_only,
 	template, to_absolute_url, val, Post, Preferences, Subreddit,
 };
 use crate::{client::json, server::RequestExt, server::ResponseExt};
-use crate::{config, utils};
 use askama::Template;
 use cookie::Cookie;
 use hyper::{Body, Request, Response};
@@ -553,6 +553,15 @@ async fn subreddit(sub: &str, quarantined: bool) -> Result<Subreddit, String> {
 
 	// Send a request to the url
 	let res = json(path, quarantined).await?;
+	parse_subreddit_about(&res, sfw_only())
+}
+
+fn parse_subreddit_about(res: &serde_json::Value, require_nsfw_flag: bool) -> Result<Subreddit, String> {
+	let nsfw = match res["data"]["over18"].as_bool() {
+		Some(flag) => flag,
+		None if require_nsfw_flag => return Err("Could not verify whether this community is SFW.".to_string()),
+		None => false,
+	};
 
 	// Metadata regarding the subreddit
 	let members: i64 = res["data"]["subscribers"].as_u64().unwrap_or_default() as i64;
@@ -560,19 +569,19 @@ async fn subreddit(sub: &str, quarantined: bool) -> Result<Subreddit, String> {
 
 	// Fetch subreddit icon either from the community_icon or icon_img value
 	let community_icon: &str = res["data"]["community_icon"].as_str().unwrap_or_default();
-	let icon = if community_icon.is_empty() { val(&res, "icon_img") } else { community_icon.to_string() };
+	let icon = if community_icon.is_empty() { val(res, "icon_img") } else { community_icon.to_string() };
 
 	Ok(Subreddit {
-		name: val(&res, "display_name"),
-		title: val(&res, "title"),
-		description: val(&res, "public_description"),
-		info: rewrite_urls(&val(&res, "description_html")),
+		name: val(res, "display_name"),
+		title: val(res, "title"),
+		description: val(res, "public_description"),
+		info: rewrite_urls(&val(res, "description_html")),
 		// moderators: moderators_list(sub, quarantined).await.unwrap_or_default(),
 		icon: format_url(&icon),
 		members: format_num(members),
 		active: format_num(active),
 		wiki: res["data"]["wiki_enabled"].as_bool().unwrap_or_default(),
-		nsfw: res["data"]["over18"].as_bool().unwrap_or_default(),
+		nsfw,
 	})
 }
 
@@ -595,7 +604,7 @@ pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
 	let path = feed_path(&sub, &sort, req.uri().query().unwrap_or_default());
 
 	// Get subreddit link
-	let subreddit_link: String = format!("{}/r/{sub}", config::get_setting("REDLIB_FULL_URL").unwrap_or_default());
+	let subreddit_link: String = format!("{}/r/{sub}", crate::utils::request_base_url(&req).unwrap_or_default());
 
 	// Get subreddit data
 	let subreddit = subreddit(&sub, false).await?;
@@ -905,6 +914,15 @@ mod tests {
 		params.insert("sub".to_string(), "edgy".to_string());
 		submit.set_params(params);
 		assert_eq!(add_quarantine_exception(submit).await.unwrap().headers()["Location"], "/r/edgy?sort=new&t=week", "{action}");
+	}
+
+	#[test]
+	fn sfw_only_enforcement_subreddit_metadata_fails_closed_without_over18() {
+		let missing = serde_json::json!({ "data": { "display_name": "mystery" } });
+		assert!(parse_subreddit_about(&missing, true).is_err());
+		assert!(!parse_subreddit_about(&missing, false).unwrap().nsfw);
+		let safe = serde_json::json!({ "data": { "display_name": "rust", "over18": false } });
+		assert!(!parse_subreddit_about(&safe, true).unwrap().nsfw);
 	}
 
 	#[test]

@@ -1,16 +1,30 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const { fakeElement, fakeTimers, runScript } = require('./support/dom');
 
+// Pull Hls.Events and Hls.ErrorTypes straight from the bundled hls.min.js so the fake cannot
+// drift from the library's real API (e.g. ErrorTypes vs ErrorType).
+const bundledHls = (() => {
+	const ctx = { window: null, self: null, navigator: { userAgent: '' } };
+	ctx.window = ctx;
+	ctx.self = ctx;
+	const source = fs.readFileSync(path.join(__dirname, '..', '..', 'static', 'hls.min.js'), 'utf8');
+	vm.runInNewContext(source, ctx, { filename: 'hls.min.js' });
+	return ctx.Hls;
+})();
+
 const MP4_URL = 'https://redlib.example/vid/abc/720.mp4';
-const NETWORK_ERROR = 'networkError';
-const MEDIA_ERROR = 'mediaError';
+const NETWORK_ERROR = bundledHls.ErrorTypes.NETWORK_ERROR;
+const MEDIA_ERROR = bundledHls.ErrorTypes.MEDIA_ERROR;
 
 class FakeHls {
-	static Events = { MANIFEST_PARSED: 'manifestParsed', FRAG_LOADED: 'fragLoaded', ERROR: 'error' };
-	static ErrorType = { NETWORK_ERROR, MEDIA_ERROR };
+	static Events = bundledHls.Events;
+	static ErrorTypes = bundledHls.ErrorTypes;
 	static isSupported() {
 		return true;
 	}
@@ -84,7 +98,7 @@ function startPlayer({ mp4 = MP4_URL, quality = 'best', play, autoplay = false, 
 		}
 	};
 	hlsClass.Events = FakeHls.Events;
-	hlsClass.ErrorType = FakeHls.ErrorType;
+	hlsClass.ErrorTypes = FakeHls.ErrorTypes;
 	hlsClass.isSupported = FakeHls.isSupported;
 
 	runScript('playHLSVideo.js', {
@@ -241,8 +255,9 @@ test('non-fatal errors are ignored', () => {
 	assert.deepEqual(hls.calls, []);
 });
 
-test('a loaded fragment restores the retry budget, so sporadic errors over a long video do not add up', () => {
-	const { hls, timers } = startPlayer();
+test('a loaded fragment resets network retries and playback progress resets media retries', () => {
+	const { hls, video, timers } = startPlayer();
+	video.currentTime = 0;
 
 	for (let burst = 0; burst < 3; burst++) {
 		for (let attempt = 0; attempt < 3; attempt++) {
@@ -251,11 +266,25 @@ test('a loaded fragment restores the retry budget, so sporadic errors over a lon
 			hls.fail(MEDIA_ERROR);
 		}
 		hls.emit(FakeHls.Events.FRAG_LOADED, {});
+		video.currentTime += 2;
+		video.listeners.timeupdate[0]();
 	}
 
 	assert.equal(hls.count('destroy'), 0);
 	assert.equal(hls.count('startLoad'), 9);
 	assert.equal(hls.count('recoverMediaError'), 9);
+});
+
+test('a downloaded but unplayable fragment cannot renew the media retry budget', () => {
+	const { hls, video } = startPlayer();
+	video.currentTime = 0;
+
+	for (let attempt = 0; attempt < 4; attempt++) {
+		hls.emit(FakeHls.Events.FRAG_LOADED, {});
+		hls.fail(MEDIA_ERROR);
+	}
+
+	assert.deepEqual(hls.calls, ['recoverMediaError', 'recoverMediaError', 'recoverMediaError', 'destroy']);
 });
 
 test('errors with no fragment loaded in between still run out of budget', () => {

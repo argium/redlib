@@ -1,6 +1,6 @@
 /* midnightpurple theme setting */
 .midnightPurple{
-	--accent: #be6ede;
+	--accent: #c67ce4;
 	--green: #268F02;
 	--text: white;
 	--foreground: #222;
@@ -8,7 +8,7 @@
 	--outside: #1f1f1f;
 	--post: #000000;
 	--panel-border: 1px solid #4E1764;
-	--highlighted: #333;
+	--highlighted: #292929;
 	--visited: #aaa;
 	--muted: #9c9c9c;
 	--shadow: 0 1px 3px rgba(0, 0, 0, 0.5);

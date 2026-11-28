@@ -1,8 +1,8 @@
 #![allow(clippy::cmp_owned)]
 use crate::client::json;
 use crate::server::RequestExt;
+use crate::utils;
 use crate::utils::{error, filter_posts, format_url, gating_metadata, get_filters, nsfw_landing, param, setting, sfw_only, template, Post, Preferences, User};
-use crate::{config, utils};
 use askama::Template;
 use chrono::DateTime;
 use hyper::{Body, Request, Response};
@@ -112,25 +112,34 @@ async fn user(name: &str) -> Result<User, String> {
 	let path: String = format!("/user/{name}/about.json?raw_json=1");
 
 	// Send a request to the url
-	json(path, false).await.map(|res| {
-		// Grab creation date as unix timestamp
-		let created_unix = res["data"]["created"].as_f64().unwrap_or(0.0).round() as i64;
-		let created = OffsetDateTime::from_unix_timestamp(created_unix).unwrap_or(OffsetDateTime::UNIX_EPOCH);
+	let res = json(path, false).await?;
+	parse_user_about(name, &res, sfw_only())
+}
 
-		// Closure used to parse JSON from Reddit APIs
-		let about = |item| res["data"]["subreddit"][item].as_str().unwrap_or_default().to_string();
+fn parse_user_about(name: &str, res: &serde_json::Value, require_nsfw_flag: bool) -> Result<User, String> {
+	let nsfw = match res["data"]["subreddit"]["over_18"].as_bool() {
+		Some(flag) => flag,
+		None if require_nsfw_flag => return Err("Could not verify whether this user is SFW.".to_string()),
+		None => false,
+	};
 
-		// Parse the JSON output into a User struct
-		User {
-			name: res["data"]["name"].as_str().unwrap_or(name).to_owned(),
-			title: about("title"),
-			icon: format_url(&about("icon_img")),
-			karma: res["data"]["total_karma"].as_i64().unwrap_or(0),
-			created: created.format(format_description!("[month repr:short] [day] '[year repr:last_two]")).unwrap_or_default(),
-			banner: about("banner_img"),
-			description: about("public_description"),
-			nsfw: res["data"]["subreddit"]["over_18"].as_bool().unwrap_or_default(),
-		}
+	// Grab creation date as unix timestamp
+	let created_unix = res["data"]["created"].as_f64().unwrap_or(0.0).round() as i64;
+	let created = OffsetDateTime::from_unix_timestamp(created_unix).unwrap_or(OffsetDateTime::UNIX_EPOCH);
+
+	// Closure used to parse JSON from Reddit APIs
+	let about = |item| res["data"]["subreddit"][item].as_str().unwrap_or_default().to_string();
+
+	// Parse the JSON output into a User struct
+	Ok(User {
+		name: res["data"]["name"].as_str().unwrap_or(name).to_owned(),
+		title: about("title"),
+		icon: format_url(&about("icon_img")),
+		karma: res["data"]["total_karma"].as_i64().unwrap_or(0),
+		created: created.format(format_description!("[month repr:short] [day] '[year repr:last_two]")).unwrap_or_default(),
+		banner: about("banner_img"),
+		description: about("public_description"),
+		nsfw,
 	})
 }
 
@@ -157,7 +166,7 @@ pub async fn rss(req: Request<Body>) -> Result<Response<Body>, String> {
 	// Get posts
 	let (posts, _) = Post::fetch(&path, false).await?;
 
-	let link = format!("{}/user/{user_str}", config::get_setting("REDLIB_FULL_URL").unwrap_or_default());
+	let link = format!("{}/user/{user_str}", crate::utils::request_base_url(&req).unwrap_or_default());
 	let body = feed_xml(&user_str, &user_obj.description, &link, posts).into_bytes();
 
 	// Create the HTTP response
@@ -255,6 +264,37 @@ mod tests {
 		assert!(with_hls.find(&hls) < with_hls.find(&player), "hls.min.js must come first so playHLSVideo.js can use Hls");
 		assert!(!rendered_profile("on", false).await.contains("hls.min.js"), "no HLS post, no hls.min.js");
 		assert!(!rendered_profile("off", true).await.contains("hls.min.js"), "use_hls off, no hls.min.js");
+	}
+
+	#[test]
+	fn ux_templates_and_settings_feedback_empty_profile_reload_link_stays_on_site() {
+		let html = UserTemplate {
+			user: User::default(),
+			posts: Vec::new(),
+			sort: ("hot".to_string(), "".to_string()),
+			ends: (String::new(), String::new()),
+			listing: "overview".to_string(),
+			prefs: Preferences::default(),
+			url: "//evil.com/user/test".to_string(),
+			redirect_url: "/user/test".to_string(),
+			is_filtered: false,
+			all_posts_filtered: false,
+			all_posts_hidden_nsfw: false,
+			no_posts: true,
+		}
+		.render()
+		.unwrap();
+		assert!(html.contains(r#"<li><a href="/">Reload</a></li>"#), "{html}");
+		assert!(!html.contains(r#"href="//evil.com"#), "{html}");
+	}
+
+	#[test]
+	fn sfw_only_enforcement_user_metadata_fails_closed_without_over_18() {
+		let missing = serde_json::json!({ "data": { "name": "someone" } });
+		assert!(parse_user_about("someone", &missing, true).is_err());
+		assert!(!parse_user_about("someone", &missing, false).unwrap().nsfw);
+		let safe = serde_json::json!({ "data": { "name": "someone", "subreddit": { "over_18": false } } });
+		assert!(!parse_user_about("someone", &safe, true).unwrap().nsfw);
 	}
 
 	#[tokio::test]

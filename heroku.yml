@@ -1,3 +1,5 @@
+# Heroku's container runtime does not honour Dockerfile HEALTHCHECK instructions;
+# configure a hosted HTTP check against /healthz if readiness monitoring is needed.
 build:
   docker:
     web: Dockerfile.alpine

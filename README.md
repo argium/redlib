@@ -260,19 +260,20 @@ Each release has one archive per CPU architecture, with a checksum file beside i
 | ARM64 | `aarch64-unknown-linux-musl` |
 | 32-bit ARM (ARMv7) | `armv7-unknown-linux-musleabihf` |
 
-Download the archive and its checksum for your architecture using [Wget](https://www.gnu.org/software/wget/), and check the archive against it:
+Download the archive and its checksum for your architecture using [Wget](https://www.gnu.org/software/wget/), verify the checksum, and unpack the binary only if it matches (set `VERSION` to the release tag you picked):
 
 ```bash
+VERSION=v0.40.0
 TARGET=x86_64-unknown-linux-musl
-wget "https://github.com/redlib-org/redlib/releases/download/v0.40.0/redlib-${TARGET}.tar.gz" \
-     "https://github.com/redlib-org/redlib/releases/download/v0.40.0/redlib-${TARGET}.tar.gz.sha256"
-sha256sum -c "redlib-${TARGET}.tar.gz.sha256"
+wget "https://github.com/redlib-org/redlib/releases/download/${VERSION}/redlib-${TARGET}.tar.gz" \
+     "https://github.com/redlib-org/redlib/releases/download/${VERSION}/redlib-${TARGET}.tar.gz.sha256" \
+  && sha256sum -c "redlib-${TARGET}.tar.gz.sha256" \
+  && tar xzf "redlib-${TARGET}.tar.gz"
 ```
 
-Unpack the binary, make it executable and change its ownership to `root`:
+Make the binary executable and change its ownership to `root`:
 
 ```bash
-tar xzf "redlib-${TARGET}.tar.gz"
 sudo chmod +x redlib && sudo chown root:root redlib
 ```
 
